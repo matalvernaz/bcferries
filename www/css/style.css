@@ -265,6 +265,12 @@ a:hover, a:focus {
     font-size: 0.85rem;
 }
 
+.vessel-tracking {
+    color: var(--color-heading);
+    font-size: 0.85rem;
+    font-style: italic;
+}
+
 /* Error message */
 .error-message {
     color: var(--color-error);

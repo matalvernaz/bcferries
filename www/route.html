@@ -265,6 +265,14 @@
 
                     li.textContent = text;
 
+                    if (s.vesselTracking && s.vesselTracking.text) {
+                        var track = document.createElement('span');
+                        track.className = 'vessel-tracking';
+                        track.textContent = ' ' + s.vesselTracking.text;
+                        li.appendChild(document.createElement('br'));
+                        li.appendChild(track);
+                    }
+
                     if (s.warning) {
                         var warn = document.createElement('span');
                         warn.className = 'sailing-warning';

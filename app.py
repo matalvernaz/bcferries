@@ -2,8 +2,12 @@ import requests as http_requests
 from flask import Flask, jsonify, request, send_from_directory
 from scraper import get_upcoming_sailings, get_sailings_for_date, get_schedule
 from data import TERMINALS_LIST, ALL_CORRIDORS, REGIONS
+import ais
 
 app = Flask(__name__, static_folder="www")
+
+# Start AIS vessel tracking listener
+ais.start()
 
 
 @app.route("/")

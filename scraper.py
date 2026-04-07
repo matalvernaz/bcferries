@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from data import ROUTES, VESSELS, WEEKDAYS, MONTHS, MONTH_NAMES, ISLAND_SHORT_NAMES, SGI_RETURN_TERMINALS, SGI_CAMERAS, EXTRA_CAMERAS
+from ais import get_vessel_tracking
 
 PACIFIC = ZoneInfo("America/Vancouver")
 
@@ -739,10 +740,19 @@ def get_upcoming_sailings(route, limit=7):
                     result["sailings"][0].append(s)
 
     result["sailings"][0] = result["sailings"][0][:limit]
-    # Strip internal fields from output
+    # Strip internal fields and enrich with vessel tracking
     for s in result["sailings"][0]:
         s.pop("exceptDates", None)
         s["warning"] = _strip_except_text(s.get("warning", ""))
+        # Add live vessel tracking for realtime sailings with a known vessel
+        vessel = s.get("vessel")
+        if vessel and s.get("realtime"):
+            vessel_code = vessel.get("code")
+            dests = s.get("destinations", [])
+            if vessel_code and dests:
+                tracking = get_vessel_tracking(vessel_code, dests[0])
+                if tracking:
+                    s["vesselTracking"] = tracking
     return result
 
 
