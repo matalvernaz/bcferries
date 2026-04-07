@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ferry Schedule</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<a class="back-link" id="back-link" href="/">&larr; All routes</a>
+<h1 id="page-heading" tabindex="-1">Ferry Schedule</h1>
+
+<div class="controls-row">
+    <div class="date-picker">
+        <label for="day-select">Show sailings for:</label>
+        <select id="day-select"></select>
+    </div>
+    <div class="limit-picker">
+        <label for="limit-select">Show:</label>
+        <select id="limit-select">
+            <option value="5">5 sailings</option>
+            <option value="10" selected>10 sailings</option>
+            <option value="50">All sailings</option>
+        </select>
+    </div>
+</div>
+<p class="schedule-warning" id="schedule-warning" hidden></p>
+
+<div id="main">
+    <div class="columns">
+        <div class="direction">
+            <h2 class="direction-heading" id="outbound-heading">From <span id="outbound-name">&#8230;</span></h2>
+            <div id="outbound-webcams" class="webcams"></div>
+            <div id="outbound-camera-thumbs" class="camera-thumbs"></div>
+            <div class="next-sailing-summary" id="outbound-next" aria-live="off">
+                Loading&#8230;
+            </div>
+            <ul class="sailing-list" id="outbound-sailings">
+                <li class="loading">Loading&#8230;</li>
+            </ol>
+        </div>
+
+        <div class="direction">
+            <h2 class="direction-heading" id="inbound-heading">From <span id="inbound-name">&#8230;</span></h2>
+            <div id="inbound-webcams" class="webcams"></div>
+            <div id="inbound-camera-thumbs" class="camera-thumbs"></div>
+            <div class="next-sailing-summary" id="inbound-next" aria-live="off">
+                Loading&#8230;
+            </div>
+            <ul class="sailing-list" id="inbound-sailings">
+                <li class="loading">Loading&#8230;</li>
+            </ol>
+        </div>
+    </div>
+</div>
+<p><small>Schedule data from <a href="https://www.bcferries.com">BC Ferries</a>. Not an official BC Ferries service.</small></p>
+<script>
+(function() {
+    var slug = window.location.pathname.split('/').pop();
+    var corridor = null;
+    var currentDaysAhead = 0;
+    var currentLimit = 10;
+    var refreshTimer = null;
+
+    // Focus heading for accessibility
+    var heading = document.getElementById('page-heading');
+    if (heading) heading.focus();
+
+    // Build date options
+    var daySelect = document.getElementById('day-select');
+    var limitSelect = document.getElementById('limit-select');
+    var dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    for (var i = 0; i <= 7; i++) {
+        var opt = document.createElement('option');
+        opt.value = i;
+        if (i === 0) {
+            opt.textContent = 'Now (upcoming sailings)';
+        } else {
+            var d = new Date();
+            d.setDate(d.getDate() + i);
+            var label = (i === 1 ? 'Tomorrow' : dayNames[d.getDay()]);
+            label += ', ' + monthNames[d.getMonth()] + ' ' + d.getDate();
+            opt.textContent = label;
+        }
+        daySelect.appendChild(opt);
+    }
+
+    daySelect.addEventListener('change', function() {
+        currentDaysAhead = parseInt(this.value);
+        var warningEl = document.getElementById('schedule-warning');
+        if (currentDaysAhead === 0) {
+            warningEl.hidden = true;
+        } else {
+            warningEl.textContent = 'Schedule data is based on the current seasonal schedule and may not reflect future changes.';
+            warningEl.hidden = false;
+        }
+        loadSailings();
+        setupAutoRefresh();
+    });
+
+    limitSelect.addEventListener('change', function() {
+        currentLimit = parseInt(this.value);
+        loadSailings();
+    });
+
+    function setupAutoRefresh() {
+        if (refreshTimer) clearInterval(refreshTimer);
+        if (currentDaysAhead === 0) {
+            refreshTimer = setInterval(loadSailings, 60000);
+        }
+    }
+
+    fetch('/api/v3/corridors')
+        .then(function(r) { return r.json(); })
+        .then(function(corridors) {
+            corridors.forEach(function(c) {
+                if (c.slug === slug) corridor = c;
+            });
+            if (!corridor) {
+                document.getElementById('page-heading').textContent = 'Route not found';
+                return;
+            }
+
+            document.getElementById('page-heading').textContent = corridor.name;
+            document.title = corridor.name + ' \u2014 Ferry Schedule';
+            document.getElementById('outbound-name').textContent = corridor.outboundLabel;
+            document.getElementById('inbound-name').textContent = corridor.inboundLabel;
+
+            var terminalSlug = slug.indexOf('tsawwassen') === 0 ? 'tsawwassen' : 'horseshoe-bay';
+            document.getElementById('back-link').href = '/terminal/' + terminalSlug;
+
+            loadSailings();
+            setupAutoRefresh();
+        })
+        .catch(function() {
+            document.getElementById('page-heading').textContent = 'Unable to load route';
+        });
+
+    function loadSailings() {
+        if (!corridor) return;
+        loadDirection(corridor.outbound, 'outbound');
+        loadDirection(corridor.inbound, 'inbound');
+    }
+
+    function fetchCameraTime(camUrl, container) {
+        if (!camUrl) return;
+        fetch('/api/v3/camera-time?url=' + encodeURIComponent(camUrl))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.lastModified) {
+                    var timeEl = container.querySelector('.camera-time');
+                    if (!timeEl) {
+                        timeEl = document.createElement('p');
+                        timeEl.className = 'camera-time';
+                        container.appendChild(timeEl);
+                    }
+                    try {
+                        var d = new Date(data.lastModified);
+                        timeEl.textContent = 'Photo taken at ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                    } catch(e) {
+                        timeEl.textContent = '';
+                    }
+                }
+            })
+            .catch(function() {});
+    }
+
+    function renderWebcams(cameras, extraCameras, prefix, label) {
+        var container = document.getElementById(prefix + '-webcams');
+        var thumbContainer = document.getElementById(prefix + '-camera-thumbs');
+        container.innerHTML = '';
+        thumbContainer.innerHTML = '';
+
+        var camUrl = null;
+        if (cameras && cameras.outsideTerminal) {
+            camUrl = cameras.outsideTerminal;
+        }
+        if (!camUrl) return;
+
+        var img = document.createElement('img');
+        img.src = camUrl + '?' + Date.now();
+        img.alt = 'Live traffic camera at ' + label + ' terminal';
+        img.className = 'webcam-img';
+        img.id = prefix + '-cam-img';
+        container.appendChild(img);
+        fetchCameraTime(camUrl, container);
+
+        // Render extra camera thumbnails for SGI routes
+        if (extraCameras && extraCameras.length > 1) {
+            extraCameras.forEach(function(cam) {
+                var btn = document.createElement('button');
+                btn.className = 'camera-thumb-btn';
+                btn.textContent = cam.name;
+                btn.setAttribute('aria-label', 'Switch to ' + cam.name + ' camera');
+                if (cam.url === camUrl) btn.classList.add('active');
+                btn.addEventListener('click', function() {
+                    var mainImg = document.getElementById(prefix + '-cam-img');
+                    if (mainImg) {
+                        mainImg.src = cam.url + '?' + Date.now();
+                        mainImg.alt = 'Live traffic camera at ' + cam.name + ' terminal';
+                    }
+                    // Update active state
+                    thumbContainer.querySelectorAll('.camera-thumb-btn').forEach(function(b) {
+                        b.classList.remove('active');
+                    });
+                    btn.classList.add('active');
+                    // Remove old camera time and fetch new
+                    var oldTime = container.querySelector('.camera-time');
+                    if (oldTime) oldTime.remove();
+                    fetchCameraTime(cam.url, container);
+                });
+                thumbContainer.appendChild(btn);
+            });
+        }
+    }
+
+    function loadDirection(routeCode, prefix) {
+        var url = '/api/v3/routes/' + routeCode + '/sailings/upcoming?limit=' + currentLimit;
+        if (currentDaysAhead > 0) {
+            url += '&days_ahead=' + currentDaysAhead;
+        }
+
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var list = document.getElementById(prefix + '-sailings');
+                var summary = document.getElementById(prefix + '-next');
+                list.innerHTML = '';
+
+                // Show schedule validity warning if the API flags it
+                if (data.scheduleWarning) {
+                    var warningEl = document.getElementById('schedule-warning');
+                    warningEl.textContent = data.scheduleWarning;
+                    warningEl.hidden = false;
+                }
+
+                var sailings = data.sailings[0];
+                if (!sailings || sailings.length === 0) {
+                    list.innerHTML = '<li>No sailings found for this date.</li>';
+                    summary.textContent = 'No sailings found.';
+                    return;
+                }
+
+                sailings.forEach(function(s) {
+                    var li = document.createElement('li');
+                    var text = s.messages.friendlyTime +
+                        ' (' + s.messages.relativeTime + ')';
+
+                    if (currentDaysAhead === 0 && s.messages.relativeDay) {
+                        text = s.messages.relativeDay + ': ' + text;
+                    }
+
+                    if (s.messages.capacity) {
+                        text += ' \u2014 ' + s.messages.capacity;
+                    }
+
+                    if (s.messages.fromIsland) {
+                        text += ' \u2014 From ' + s.messages.fromIsland;
+                    }
+
+                    if (s.messages.stops) {
+                        text += ' \u2014 Stops: ' + s.messages.stops;
+                    }
+
+                    li.textContent = text;
+
+                    if (s.warning) {
+                        var warn = document.createElement('span');
+                        warn.className = 'sailing-warning';
+                        warn.textContent = ' ' + s.warning;
+                        li.appendChild(document.createElement('br'));
+                        li.appendChild(warn);
+                    }
+
+                    list.appendChild(li);
+                });
+
+                var first = sailings[0];
+                var summaryText;
+                if (currentDaysAhead === 0) {
+                    summaryText = 'Next: ' + first.messages.friendlyTime +
+                        ' (' + first.messages.relativeTime + ')';
+                } else {
+                    summaryText = sailings.length + ' sailing' + (sailings.length !== 1 ? 's' : '');
+                }
+                if (first.messages.capacity) summaryText += ' \u2014 ' + first.messages.capacity;
+                if (first.warning) summaryText += ' \u2014 ' + first.warning;
+                summary.textContent = summaryText;
+
+                // Render webcam images (only for "now" view)
+                if (currentDaysAhead === 0 && data.terminalCameras) {
+                    renderWebcams(data.terminalCameras, data.extraCameras, prefix,
+                        document.getElementById(prefix + '-name').textContent);
+                } else if (currentDaysAhead > 0) {
+                    document.getElementById(prefix + '-webcams').innerHTML = '';
+                    document.getElementById(prefix + '-camera-thumbs').innerHTML = '';
+                }
+            })
+            .catch(function() {
+                var list = document.getElementById(prefix + '-sailings');
+                var summary = document.getElementById(prefix + '-next');
+                list.innerHTML = '<li class="error-message">Could not load sailings. Retrying&#8230;</li>';
+                summary.textContent = 'Could not load sailings.';
+            });
+    }
+})();
+</script>
+</body>
+</html>

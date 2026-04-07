@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ferry Schedules</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<a class="back-link" href="/">&larr; All terminals</a>
+<h1 id="page-heading" tabindex="-1">Routes</h1>
+<h2>Choose a route</h2>
+<ul class="route-list" id="corridors" aria-label="Available routes">
+    <li class="loading">Loading routes&#8230;</li>
+</ul>
+<p><small>Schedule data from <a href="https://www.bcferries.com">BC Ferries</a>. Not an official BC Ferries service.</small></p>
+<script>
+(function() {
+    var heading = document.getElementById('page-heading');
+    if (heading) heading.focus();
+    var slug = window.location.pathname.split('/').pop();
+
+    fetch('/api/v3/terminals')
+        .then(function(r) { return r.json(); })
+        .then(function(terminals) {
+            terminals.forEach(function(t) {
+                if (t.slug === slug) {
+                    document.getElementById('page-heading').textContent = t.name;
+                    document.title = t.name + ' \u2014 Ferry Schedules';
+                }
+            });
+        });
+
+    fetch('/api/v3/terminals/' + slug + '/corridors')
+        .then(function(r) { return r.json(); })
+        .then(function(corridors) {
+            var list = document.getElementById('corridors');
+            list.innerHTML = '';
+            corridors.forEach(function(c) {
+                var li = document.createElement('li');
+                var a = document.createElement('a');
+                a.href = '/route/' + c.slug;
+                a.textContent = c.name;
+                li.appendChild(a);
+                list.appendChild(li);
+            });
+        })
+        .catch(function() {
+            document.getElementById('corridors').innerHTML =
+                '<li>Unable to load routes. Please try again later.</li>';
+        });
+})();
+</script>
+</body>
+</html>

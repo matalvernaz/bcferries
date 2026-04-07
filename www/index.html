@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ferry Schedules</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<h1 id="page-heading" tabindex="-1">Ferry Schedules</h1>
+<h2>Choose a route</h2>
+<div id="regions" aria-label="Available routes">
+    <p class="loading">Loading&#8230;</p>
+</div>
+<p><small>Schedule data from <a href="https://www.bcferries.com">BC Ferries</a>. Not an official BC Ferries service.</small></p>
+<script>
+(function() {
+    var heading = document.getElementById('page-heading');
+    if (heading) heading.focus();
+    fetch('/api/v3/regions')
+        .then(function(r) { return r.json(); })
+        .then(function(regions) {
+            var container = document.getElementById('regions');
+            container.innerHTML = '';
+            regions.forEach(function(region) {
+                var h3 = document.createElement('h3');
+                h3.className = 'region-heading';
+                h3.textContent = region.name;
+                container.appendChild(h3);
+                var ul = document.createElement('ul');
+                ul.className = 'route-list';
+                region.corridors.forEach(function(c) {
+                    var li = document.createElement('li');
+                    var a = document.createElement('a');
+                    a.href = '/route/' + c.slug;
+                    a.textContent = c.name;
+                    li.appendChild(a);
+                    ul.appendChild(li);
+                });
+                container.appendChild(ul);
+            });
+        })
+        .catch(function() {
+            document.getElementById('regions').innerHTML =
+                '<p>Unable to load routes. Please try again later.</p>';
+        });
+})();
+</script>
+</body>
+</html>
