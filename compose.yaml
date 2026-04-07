@@ -1,0 +1,20 @@
+services:
+  bcferries:
+    build: .
+    container_name: bcferries
+    restart: unless-stopped
+    environment:
+      - TZ=America/Vancouver
+      - AIS_API_KEY=${AIS_API_KEY}
+    networks:
+      - traefik
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+networks:
+  traefik:
+    external: true
