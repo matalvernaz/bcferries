@@ -255,6 +255,7 @@
                     return;
                 }
 
+                var shownTracking = false;
                 sailings.forEach(function(s) {
                     var li = document.createElement('li');
                     var text = s.messages.friendlyTime +
@@ -278,12 +279,13 @@
 
                     li.textContent = text;
 
-                    if (s.vesselTracking && s.vesselTracking.text) {
+                    if (!shownTracking && s.vesselTracking && s.vesselTracking.text) {
                         var track = document.createElement('span');
                         track.className = 'vessel-tracking';
                         track.textContent = ' ' + s.vesselTracking.text;
                         li.appendChild(document.createElement('br'));
                         li.appendChild(track);
+                        shownTracking = true;
                     }
 
                     if (s.warning) {
