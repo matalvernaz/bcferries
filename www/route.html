@@ -155,24 +155,26 @@
         loadDirection(corridor.inbound, 'inbound');
     }
 
-    function fetchCameraTime(camUrl, container) {
+    function fetchCameraTime(camUrl, container, imgId) {
         if (!camUrl) return;
         fetch('/api/v3/camera-time?url=' + encodeURIComponent(camUrl))
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.lastModified) {
-                    var timeEl = container.querySelector('.camera-time');
-                    if (!timeEl) {
-                        timeEl = document.createElement('p');
-                        timeEl.className = 'camera-time';
-                        container.appendChild(timeEl);
-                    }
                     try {
                         var d = new Date(data.lastModified);
-                        timeEl.textContent = 'Photo taken at ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-                    } catch(e) {
-                        timeEl.textContent = '';
-                    }
+                        var timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                        // Update figcaption
+                        var caption = container.querySelector('.camera-caption');
+                        if (caption) caption.textContent = 'Photo taken at ' + timeStr;
+                        // Update img alt to include timestamp for screen readers
+                        var img = document.getElementById(imgId);
+                        if (img) {
+                            var baseAlt = img.getAttribute('data-base-alt') || img.alt;
+                            img.setAttribute('data-base-alt', baseAlt);
+                            img.alt = baseAlt + ', photo taken at ' + timeStr;
+                        }
+                    } catch(e) {}
                 }
             })
             .catch(function() {});
@@ -190,13 +192,20 @@
         }
         if (!camUrl) return;
 
+        var figure = document.createElement('figure');
+        figure.className = 'webcam-figure';
         var img = document.createElement('img');
         img.src = camUrl + '?' + Date.now();
         img.alt = 'Live traffic camera at ' + label + ' terminal';
+        img.setAttribute('data-base-alt', img.alt);
         img.className = 'webcam-img';
         img.id = prefix + '-cam-img';
-        container.appendChild(img);
-        fetchCameraTime(camUrl, container);
+        var caption = document.createElement('figcaption');
+        caption.className = 'camera-caption';
+        figure.appendChild(img);
+        figure.appendChild(caption);
+        container.appendChild(figure);
+        fetchCameraTime(camUrl, container, img.id);
 
         // Render extra camera thumbnails for SGI routes
         if (extraCameras && extraCameras.length > 1) {
@@ -209,18 +218,20 @@
                 btn.addEventListener('click', function() {
                     var mainImg = document.getElementById(prefix + '-cam-img');
                     if (mainImg) {
+                        var baseAlt = 'Live traffic camera at ' + cam.name + ' terminal';
                         mainImg.src = cam.url + '?' + Date.now();
-                        mainImg.alt = 'Live traffic camera at ' + cam.name + ' terminal';
+                        mainImg.alt = baseAlt;
+                        mainImg.setAttribute('data-base-alt', baseAlt);
                     }
                     // Update active state
                     thumbContainer.querySelectorAll('.camera-thumb-btn').forEach(function(b) {
                         b.classList.remove('active');
                     });
                     btn.classList.add('active');
-                    // Remove old camera time and fetch new
-                    var oldTime = container.querySelector('.camera-time');
-                    if (oldTime) oldTime.remove();
-                    fetchCameraTime(cam.url, container);
+                    // Reset caption and fetch new timestamp
+                    var cap = container.querySelector('.camera-caption');
+                    if (cap) cap.textContent = '';
+                    fetchCameraTime(cam.url, container, prefix + '-cam-img');
                 });
                 thumbContainer.appendChild(btn);
             });

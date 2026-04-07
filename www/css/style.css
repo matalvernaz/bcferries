@@ -294,11 +294,16 @@ a:hover, a:focus {
     border-radius: 0.35rem;
 }
 
-.camera-time {
+.webcam-figure {
+    margin: 0;
+}
+
+.camera-caption {
     font-size: 0.8rem;
     color: var(--color-border);
     margin: 0.25rem 0 0;
     font-style: italic;
+    min-height: 1.2em;
 }
 
 /* Camera thumbnail buttons */
