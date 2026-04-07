@@ -652,6 +652,26 @@ def get_upcoming_sailings(route, limit=7):
                     _add_extras_to_messages(s)
                     result["sailings"][0].append(s)
 
+        # If CC API returned nothing for today, fall back to seasonal schedule
+        if len(result["sailings"][0]) == 0:
+            today_weekday = now.isoweekday()
+            schedule = get_seasonal_schedule(route)
+            day_sailings = schedule["sailings"][today_weekday]
+            if not day_sailings and schedule["sailings"][1]:
+                day_sailings = schedule["sailings"][1]
+            for s in day_sailings:
+                dep = s["scheduledDeparture"]
+                if dep and not _is_excluded(s, today):
+                    sailing_dt = _sailing_datetime(dep)
+                    if sailing_dt >= now:
+                        s = copy.deepcopy(s)
+                        s["messages"] = {
+                            "friendlyTime": _fmt_time(dep["hour"], dep["minute"]),
+                            "relativeTime": _relative_time(sailing_dt),
+                            "relativeDay": "Today",
+                        }
+                        result["sailings"][0].append(s)
+
         # If we need more, get tomorrow from CC API
         if len(result["sailings"][0]) < limit:
             tomorrow_data = get_tomorrow_conditions(route)
