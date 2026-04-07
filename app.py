@@ -1,7 +1,7 @@
 import requests as http_requests
 from flask import Flask, jsonify, request, send_from_directory
 from scraper import get_upcoming_sailings, get_sailings_for_date, get_schedule
-from data import TERMINALS_LIST, ALL_CORRIDORS, REGIONS
+from data import TERMINALS_LIST, ALL_CORRIDORS, REGIONS, VESSELS
 import ais
 
 app = Flask(__name__, static_folder="www")
@@ -23,6 +23,11 @@ def terminal_page(slug):
 @app.route("/route/<slug>")
 def route_page(slug):
     return send_from_directory("www", "route.html")
+
+
+@app.route("/map/<slug>")
+def map_page(slug):
+    return send_from_directory("www", "map.html")
 
 
 @app.route("/css/<path:filename>")
@@ -99,6 +104,40 @@ def camera_time():
         return jsonify({"lastModified": last_modified})
     except Exception:
         return jsonify({"lastModified": ""}), 200
+
+
+@app.route("/api/v3/vessels")
+def vessels():
+    """Return current AIS positions for vessels on given routes."""
+    routes = request.args.get("routes", "").split(",")
+    seen = set()
+    result = []
+    for route_code in routes:
+        route_code = route_code.strip().lower()
+        if not route_code:
+            continue
+        sailings = get_upcoming_sailings(route_code, limit=10)
+        for s in sailings.get("sailings", [[]])[0]:
+            vessel = s.get("vessel")
+            if not vessel:
+                continue
+            code = vessel.get("code")
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            pos = ais.get_vessel_position(code)
+            if pos:
+                result.append({
+                    "code": code,
+                    "name": VESSELS.get(code, {}).get("name", code),
+                    "lat": pos["lat"],
+                    "lng": pos["lng"],
+                    "speed": round(pos["speed"], 1),
+                    "heading": pos["heading"],
+                })
+    resp = jsonify(result)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
 
 
 @app.route("/api/v3/routes/<route>/sailings/<weekday>")

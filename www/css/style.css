@@ -333,11 +333,24 @@ a:hover, a:focus {
     border-color: var(--color-summary-bg);
 }
 
+/* Navigation row */
+.route-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
 /* Back link */
 .back-link {
     display: inline-block;
-    margin-bottom: 0.5rem;
     font-size: 1rem;
+}
+
+/* Map link */
+.map-link {
+    font-size: 0.9rem;
+    font-weight: 600;
 }
 
 /* Loading */

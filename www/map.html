@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Map</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+    #map {
+        width: 100%;
+        height: calc(100vh - 8rem);
+        min-height: 20rem;
+        border-radius: 0.5rem;
+        border: 2px solid var(--color-card-border);
+    }
+    .map-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+    .map-header h1 {
+        margin: 0;
+    }
+    .vessel-label {
+        background: var(--color-summary-bg);
+        color: var(--color-summary-text);
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        white-space: nowrap;
+        border: none;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .vessel-popup-name {
+        font-weight: 700;
+        font-size: 0.95rem;
+        margin-bottom: 0.25rem;
+    }
+    .vessel-popup-detail {
+        font-size: 0.85rem;
+        margin: 0.1rem 0;
+    }
+    @media (prefers-color-scheme: dark) {
+        .leaflet-tile-pane { filter: brightness(0.8) contrast(1.1) saturate(0.8); }
+    }
+</style>
+</head>
+<body>
+<div class="map-header">
+    <div>
+        <a class="back-link" id="back-link" href="/">&larr; Back to schedule</a>
+        <h1 id="page-heading" tabindex="-1">Live Map</h1>
+    </div>
+</div>
+<div id="map" role="img" aria-label="Map showing live ferry positions"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {
+    var slug = window.location.pathname.split('/').pop();
+    var corridor = null;
+    var map = null;
+    var vesselMarkers = {};
+
+    var heading = document.getElementById('page-heading');
+    if (heading) heading.focus();
+
+    // Initialize map centered on the Salish Sea
+    map = L.map('map', {
+        center: [49.0, -123.5],
+        zoom: 9,
+        zoomControl: true,
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxZoom: 15,
+    }).addTo(map);
+
+    // Load corridor info to get route codes and set title
+    fetch('/api/v3/corridors')
+        .then(function(r) { return r.json(); })
+        .then(function(corridors) {
+            corridors.forEach(function(c) {
+                if (c.slug === slug) corridor = c;
+            });
+            if (!corridor) {
+                document.getElementById('page-heading').textContent = 'Route not found';
+                return;
+            }
+            document.getElementById('page-heading').textContent = corridor.name + ' \u2014 Live Map';
+            document.title = corridor.name + ' \u2014 Live Map';
+            document.getElementById('back-link').href = '/route/' + slug;
+
+            loadVessels();
+            setInterval(loadVessels, 30000);
+        });
+
+    function createVesselIcon(heading) {
+        // SVG arrow rotated to vessel heading
+        var rotation = heading || 0;
+        var svg = '<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
+            '<g transform="rotate(' + rotation + ' 12 12)">' +
+            '<polygon points="12,2 6,20 12,16 18,20" fill="#003366" stroke="#ffffff" stroke-width="1.5"/>' +
+            '</g></svg>';
+        return L.divIcon({
+            html: svg,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
+            className: '',
+        });
+    }
+
+    function loadVessels() {
+        if (!corridor) return;
+        var routes = corridor.outbound + ',' + corridor.inbound;
+        fetch('/api/v3/vessels?routes=' + routes)
+            .then(function(r) { return r.json(); })
+            .then(function(vessels) {
+                var activeCodes = {};
+                vessels.forEach(function(v) {
+                    activeCodes[v.code] = true;
+                    if (vesselMarkers[v.code]) {
+                        // Update existing marker
+                        vesselMarkers[v.code].marker.setLatLng([v.lat, v.lng]);
+                        vesselMarkers[v.code].marker.setIcon(createVesselIcon(v.heading));
+                        vesselMarkers[v.code].label.setLatLng([v.lat, v.lng]);
+                        vesselMarkers[v.code].marker.setPopupContent(popupContent(v));
+                    } else {
+                        // Create new marker
+                        var marker = L.marker([v.lat, v.lng], {
+                            icon: createVesselIcon(v.heading),
+                            title: v.name,
+                        }).addTo(map);
+                        marker.bindPopup(popupContent(v));
+
+                        var label = L.marker([v.lat, v.lng], {
+                            icon: L.divIcon({
+                                html: '<span class="vessel-label">' + v.name + '</span>',
+                                iconSize: null,
+                                iconAnchor: [-14, 12],
+                                className: '',
+                            }),
+                            interactive: false,
+                        }).addTo(map);
+
+                        vesselMarkers[v.code] = { marker: marker, label: label };
+                    }
+                });
+
+                // Remove markers for vessels no longer on route
+                Object.keys(vesselMarkers).forEach(function(code) {
+                    if (!activeCodes[code]) {
+                        map.removeLayer(vesselMarkers[code].marker);
+                        map.removeLayer(vesselMarkers[code].label);
+                        delete vesselMarkers[code];
+                    }
+                });
+
+                // Fit bounds if we have vessels
+                if (vessels.length > 0) {
+                    var bounds = L.latLngBounds(vessels.map(function(v) {
+                        return [v.lat, v.lng];
+                    }));
+                    // Only auto-fit on first load
+                    if (!loadVessels._fitted) {
+                        map.fitBounds(bounds.pad(0.3));
+                        loadVessels._fitted = true;
+                    }
+                }
+            })
+            .catch(function() {});
+    }
+
+    function popupContent(v) {
+        var html = '<div class="vessel-popup-name">' + v.name + '</div>';
+        if (v.speed > 0.5) {
+            html += '<p class="vessel-popup-detail">Speed: ' + v.speed + ' knots</p>';
+            html += '<p class="vessel-popup-detail">Heading: ' + headingToCompass(v.heading) + '</p>';
+        } else {
+            html += '<p class="vessel-popup-detail">In port</p>';
+        }
+        return html;
+    }
+
+    function headingToCompass(deg) {
+        var dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+        return dirs[Math.round(deg / 45) % 8];
+    }
+})();
+</script>
+</body>
+</html>

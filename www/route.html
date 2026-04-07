@@ -7,7 +7,10 @@
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<a class="back-link" id="back-link" href="/">&larr; All routes</a>
+<div class="route-nav">
+    <a class="back-link" id="back-link" href="/">&larr; All routes</a>
+    <a class="map-link" id="map-link" href="#" hidden>View live map &rarr;</a>
+</div>
 <h1 id="page-heading" tabindex="-1">Ferry Schedule</h1>
 
 <div class="controls-row">
@@ -129,6 +132,16 @@
 
             var terminalSlug = slug.indexOf('tsawwassen') === 0 ? 'tsawwassen' : 'horseshoe-bay';
             document.getElementById('back-link').href = '/terminal/' + terminalSlug;
+
+            // Check if there are vessels with AIS data for this route
+            var mapLink = document.getElementById('map-link');
+            mapLink.href = '/map/' + slug;
+            fetch('/api/v3/vessels?routes=' + corridor.outbound + ',' + corridor.inbound)
+                .then(function(r) { return r.json(); })
+                .then(function(vessels) {
+                    if (vessels.length > 0) mapLink.hidden = false;
+                })
+                .catch(function() {});
 
             loadSailings();
             setupAutoRefresh();
