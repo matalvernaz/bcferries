@@ -416,6 +416,55 @@ SGI_CAMERAS = [
     {"name": "Pender Island", "url": "https://ccimg.bcferries.com/cc/support/terminals/cam1_POB.jpg"},
 ]
 
+# MMSI (Maritime Mobile Service Identity) numbers for AIS vessel tracking.
+# All BC Ferries vessels are Canadian-flagged (MID 316).
+VESSEL_MMSI = {
+    # Major vessels
+    "sbc": 316001268,   # Spirit of British Columbia
+    "svi": 316001269,   # Spirit of Vancouver Island
+    "cel": 316011409,   # Coastal Celebration
+    "ins": 316011408,   # Coastal Inspiration
+    "ren": 316011407,   # Coastal Renaissance
+    "alb": 316001245,   # Queen of Alberni
+    "coq": 316001249,   # Queen of Coquitlam
+    "cow": 316001251,   # Queen of Cowichan
+    "nwm": 316001255,   # Queen of New Westminster
+    "oak": 316001257,   # Queen of Oak Bay
+    "sur": 316001262,   # Queen of Surrey
+    # Salish class
+    "eag": 316030626,   # Salish Eagle
+    "orc": 316030627,   # Salish Orca
+    "rav": 316030628,   # Salish Raven
+    "her": 316047943,   # Salish Heron
+    # Medium vessels
+    "ske": 316001267,   # Skeena Queen
+    "cap": 316001247,   # Queen of Capilano
+    "cum": 316001252,   # Queen of Cumberland
+    "bow": 316001232,   # Bowen Queen
+    "mqn": 316001238,   # Mayne Queen
+    "bur": 316001246,   # Queen of Burnaby
+    "sky": 316012774,   # Malaspina Sky (formerly Island Sky)
+    "kah": 316001236,   # Kahloke
+    "qni": 316001265,   # Quinitsa
+    "qsa": 316001266,   # Quinsam
+    "bsc": 316030644,   # Baynes Sound Connector
+    "how": 316001234,   # Howe Sound Queen
+    "kli": 316001235,   # Klitsa
+    "kup": 316009547,   # Kuper (renamed Pune'luxutth)
+    "kwu": 316001237,   # Kwuna
+    "prq": 316001243,   # Powell River Queen
+    "qq2": 316001244,   # Quadra Queen II
+    "nip": 316001242,   # North Island Princess
+    # Northern vessels
+    "nv1": 316194000,   # Northern Adventure
+    "nv2": 316014054,   # Northern Expedition
+    "nsw": 316036676,   # Northern Sea Wolf
+    # Small / retired vessels (MMSI still registered)
+    "nim": 316001241,   # Nimpkish
+    "tac": 316001271,   # Tachek
+    "ten": 316001272,   # Tenaka
+}
+
 VESSELS = {
     "alb": {"code": "alb", "name": "Queen of Alberni"},
     "bog": {"code": "bog", "name": "Unassigned Vessel"},
