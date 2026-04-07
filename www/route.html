@@ -155,7 +155,7 @@
         loadDirection(corridor.inbound, 'inbound');
     }
 
-    function fetchCameraTime(camUrl, container, imgId) {
+    function fetchCameraTime(camUrl, container) {
         if (!camUrl) return;
         fetch('/api/v3/camera-time?url=' + encodeURIComponent(camUrl))
             .then(function(r) { return r.json(); })
@@ -164,15 +164,15 @@
                     try {
                         var d = new Date(data.lastModified);
                         var timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-                        // Update figcaption
                         var caption = container.querySelector('.camera-caption');
-                        if (caption) caption.textContent = 'Photo taken at ' + timeStr;
-                        // Update img alt to include timestamp for screen readers
-                        var img = document.getElementById(imgId);
+                        if (caption) {
+                            caption.textContent = 'Photo taken at ' + timeStr;
+                            caption.hidden = false;
+                        }
+                        // Put timestamp in alt so screen readers get it with the image
+                        var img = container.querySelector('.webcam-img');
                         if (img) {
-                            var baseAlt = img.getAttribute('data-base-alt') || img.alt;
-                            img.setAttribute('data-base-alt', baseAlt);
-                            img.alt = baseAlt + ', photo taken at ' + timeStr;
+                            img.alt = img.getAttribute('data-base-alt') + ', photo taken at ' + timeStr;
                         }
                     } catch(e) {}
                 }
@@ -196,16 +196,19 @@
         figure.className = 'webcam-figure';
         var img = document.createElement('img');
         img.src = camUrl + '?' + Date.now();
-        img.alt = 'Live traffic camera at ' + label + ' terminal';
-        img.setAttribute('data-base-alt', img.alt);
+        var baseAlt = 'Live traffic camera at ' + label + ' terminal';
+        img.alt = baseAlt;
+        img.setAttribute('data-base-alt', baseAlt);
         img.className = 'webcam-img';
         img.id = prefix + '-cam-img';
         var caption = document.createElement('figcaption');
         caption.className = 'camera-caption';
+        caption.setAttribute('aria-hidden', 'true');
+        caption.hidden = true;
         figure.appendChild(img);
         figure.appendChild(caption);
         container.appendChild(figure);
-        fetchCameraTime(camUrl, container, img.id);
+        fetchCameraTime(camUrl, container);
 
         // Render extra camera thumbnails for SGI routes
         if (extraCameras && extraCameras.length > 1) {
@@ -230,8 +233,8 @@
                     btn.classList.add('active');
                     // Reset caption and fetch new timestamp
                     var cap = container.querySelector('.camera-caption');
-                    if (cap) cap.textContent = '';
-                    fetchCameraTime(cam.url, container, prefix + '-cam-img');
+                    if (cap) { cap.textContent = ''; cap.hidden = true; }
+                    fetchCameraTime(cam.url, container);
                 });
                 thumbContainer.appendChild(btn);
             });
