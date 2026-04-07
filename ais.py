@@ -255,6 +255,9 @@ def _run_ws():
 
 def start():
     """Start the AIS listener in a background daemon thread."""
+    if not AIS_API_KEY:
+        print("[ais] AIS_API_KEY not set, vessel tracking disabled", flush=True)
+        return
     t = threading.Thread(target=_run_ws, daemon=True)
     t.start()
     print("[ais] Background listener started", flush=True)

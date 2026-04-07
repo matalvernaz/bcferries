@@ -126,12 +126,11 @@
             }
 
             document.getElementById('page-heading').textContent = corridor.name;
-            document.title = corridor.name + ' \u2014 Ferry Schedule';
+            document.title = corridor.name + ', Ferry Schedule';
             document.getElementById('outbound-name').textContent = corridor.outboundLabel;
             document.getElementById('inbound-name').textContent = corridor.inboundLabel;
 
-            var terminalSlug = slug.indexOf('tsawwassen') === 0 ? 'tsawwassen' : 'horseshoe-bay';
-            document.getElementById('back-link').href = '/terminal/' + terminalSlug;
+            document.getElementById('back-link').href = '/';
 
             // Check if there are vessels with AIS data for this route
             var mapLink = document.getElementById('map-link');
@@ -229,6 +228,7 @@
     }
 
     function loadDirection(routeCode, prefix) {
+        var dirLabel = document.getElementById(prefix + '-name').textContent;
         var url = '/api/v3/routes/' + routeCode + '/sailings/upcoming?limit=' + currentLimit;
         if (currentDaysAhead > 0) {
             url += '&days_ahead=' + currentDaysAhead;
@@ -251,12 +251,32 @@
                 var sailings = data.sailings[0];
                 if (!sailings || sailings.length === 0) {
                     list.innerHTML = '<li>No sailings found for this date.</li>';
-                    summary.textContent = 'No sailings found.';
+                    summary.textContent = 'No sailings found from ' + dirLabel + '.';
                     return;
                 }
 
-                var shownTracking = false;
-                sailings.forEach(function(s) {
+                // Build summary from first sailing
+                var first = sailings[0];
+                var summaryText;
+                if (currentDaysAhead === 0) {
+                    summaryText = 'Next sailing from ' + dirLabel + ': ' +
+                        first.messages.friendlyTime +
+                        ' (' + first.messages.relativeTime + ')';
+                } else {
+                    summaryText = sailings.length + ' sailing' +
+                        (sailings.length !== 1 ? 's' : '') +
+                        ' from ' + dirLabel;
+                }
+                if (first.messages.capacity) summaryText += ', ' + first.messages.capacity;
+                if (first.vesselTracking && first.vesselTracking.text) {
+                    summaryText += '. ' + first.vesselTracking.text;
+                }
+                if (first.warning) summaryText += ', ' + first.warning;
+                summary.textContent = summaryText;
+
+                // List remaining sailings (first is already in summary)
+                var remaining = sailings.length > 1 ? sailings.slice(1) : sailings;
+                remaining.forEach(function(s) {
                     var li = document.createElement('li');
                     var text = s.messages.friendlyTime +
                         ' (' + s.messages.relativeTime + ')';
@@ -266,27 +286,18 @@
                     }
 
                     if (s.messages.capacity) {
-                        text += ' \u2014 ' + s.messages.capacity;
+                        text += ', ' + s.messages.capacity;
                     }
 
                     if (s.messages.fromIsland) {
-                        text += ' \u2014 From ' + s.messages.fromIsland;
+                        text += ', from ' + s.messages.fromIsland;
                     }
 
                     if (s.messages.stops) {
-                        text += ' \u2014 Stops: ' + s.messages.stops;
+                        text += ', stops: ' + s.messages.stops;
                     }
 
                     li.textContent = text;
-
-                    if (!shownTracking && s.vesselTracking && s.vesselTracking.text) {
-                        var track = document.createElement('span');
-                        track.className = 'vessel-tracking';
-                        track.textContent = ' ' + s.vesselTracking.text;
-                        li.appendChild(document.createElement('br'));
-                        li.appendChild(track);
-                        shownTracking = true;
-                    }
 
                     if (s.warning) {
                         var warn = document.createElement('span');
@@ -298,18 +309,6 @@
 
                     list.appendChild(li);
                 });
-
-                var first = sailings[0];
-                var summaryText;
-                if (currentDaysAhead === 0) {
-                    summaryText = 'Next: ' + first.messages.friendlyTime +
-                        ' (' + first.messages.relativeTime + ')';
-                } else {
-                    summaryText = sailings.length + ' sailing' + (sailings.length !== 1 ? 's' : '');
-                }
-                if (first.messages.capacity) summaryText += ' \u2014 ' + first.messages.capacity;
-                if (first.warning) summaryText += ' \u2014 ' + first.warning;
-                summary.textContent = summaryText;
 
                 // Render webcam images (only for "now" view)
                 if (currentDaysAhead === 0 && data.terminalCameras) {

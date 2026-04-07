@@ -162,19 +162,19 @@ TERMINALS_LIST = [
 HSB_CORRIDORS = [
     {
         "slug": "horseshoe-bay-bowen-island",
-        "name": "Horseshoe Bay \u2014 Bowen Island",
+        "name": "Horseshoe Bay and Bowen Island",
         "outbound": "hsb-bow", "inbound": "bow-hsb",
         "outboundLabel": "Horseshoe Bay", "inboundLabel": "Bowen Island",
     },
     {
         "slug": "horseshoe-bay-langdale",
-        "name": "Horseshoe Bay \u2014 Langdale",
+        "name": "Horseshoe Bay and Langdale",
         "outbound": "hsb-lng", "inbound": "lng-hsb",
         "outboundLabel": "Horseshoe Bay", "inboundLabel": "Langdale",
     },
     {
         "slug": "horseshoe-bay-nanaimo",
-        "name": "Horseshoe Bay \u2014 Nanaimo (Departure Bay)",
+        "name": "Horseshoe Bay and Nanaimo (Departure Bay)",
         "outbound": "hsb-nan", "inbound": "nan-hsb",
         "outboundLabel": "Horseshoe Bay", "inboundLabel": "Nanaimo (Departure Bay)",
     },
@@ -183,19 +183,19 @@ HSB_CORRIDORS = [
 TSA_CORRIDORS = [
     {
         "slug": "tsawwassen-swartz-bay",
-        "name": "Tsawwassen \u2014 Swartz Bay (Victoria)",
+        "name": "Tsawwassen and Swartz Bay (Victoria)",
         "outbound": "tsa-swb", "inbound": "swb-tsa",
         "outboundLabel": "Tsawwassen", "inboundLabel": "Swartz Bay",
     },
     {
         "slug": "tsawwassen-duke-point",
-        "name": "Tsawwassen \u2014 Duke Point (Nanaimo)",
+        "name": "Tsawwassen and Duke Point (Nanaimo)",
         "outbound": "tsa-duk", "inbound": "duk-tsa",
         "outboundLabel": "Tsawwassen", "inboundLabel": "Duke Point",
     },
     {
         "slug": "tsawwassen-southern-gulf-islands",
-        "name": "Tsawwassen \u2014 Southern Gulf Islands",
+        "name": "Tsawwassen and Southern Gulf Islands",
         "outbound": "tsa-sgi", "inbound": "sgi-tsa",
         "outboundLabel": "Tsawwassen", "inboundLabel": "Southern Gulf Islands",
     },
@@ -204,13 +204,13 @@ TSA_CORRIDORS = [
 SWB_CORRIDORS = [
     {
         "slug": "swartz-bay-fulford-harbour",
-        "name": "Swartz Bay \u2014 Fulford Harbour (Salt Spring)",
+        "name": "Swartz Bay and Fulford Harbour (Salt Spring)",
         "outbound": "swb-ful", "inbound": "ful-swb",
         "outboundLabel": "Swartz Bay", "inboundLabel": "Fulford Harbour",
     },
     {
         "slug": "swartz-bay-southern-gulf-islands",
-        "name": "Swartz Bay \u2014 Southern Gulf Islands",
+        "name": "Swartz Bay and Southern Gulf Islands",
         "outbound": "swb-sgi", "inbound": "sgi-swb",
         "outboundLabel": "Swartz Bay", "inboundLabel": "Southern Gulf Islands",
     },
@@ -219,19 +219,19 @@ SWB_CORRIDORS = [
 GULF_ISLAND_CORRIDORS = [
     {
         "slug": "crofton-vesuvius-bay",
-        "name": "Crofton \u2014 Vesuvius Bay (Salt Spring)",
+        "name": "Crofton and Vesuvius Bay (Salt Spring)",
         "outbound": "cft-ves", "inbound": "ves-cft",
         "outboundLabel": "Crofton", "inboundLabel": "Vesuvius Bay",
     },
     {
         "slug": "chemainus-thetis-penelakut",
-        "name": "Chemainus \u2014 Thetis / Penelakut Island",
+        "name": "Chemainus and Thetis / Penelakut Island",
         "outbound": "chm-pen", "inbound": "pen-chm",
         "outboundLabel": "Chemainus", "inboundLabel": "Thetis / Penelakut",
     },
     {
         "slug": "nanaimo-gabriola",
-        "name": "Nanaimo Harbour \u2014 Gabriola Island",
+        "name": "Nanaimo Harbour and Gabriola Island",
         "outbound": "nah-gab", "inbound": "gab-nah",
         "outboundLabel": "Nanaimo Harbour", "inboundLabel": "Gabriola Island",
     },
@@ -240,19 +240,19 @@ GULF_ISLAND_CORRIDORS = [
 SUNSHINE_COAST_CORRIDORS = [
     {
         "slug": "earls-cove-saltery-bay",
-        "name": "Earls Cove \u2014 Saltery Bay",
+        "name": "Earls Cove and Saltery Bay",
         "outbound": "erl-slt", "inbound": "slt-erl",
         "outboundLabel": "Earls Cove", "inboundLabel": "Saltery Bay",
     },
     {
         "slug": "powell-river-comox",
-        "name": "Powell River \u2014 Comox (Little River)",
+        "name": "Powell River and Comox (Little River)",
         "outbound": "pwr-cmx", "inbound": "cmx-pwr",
         "outboundLabel": "Powell River", "inboundLabel": "Comox (Little River)",
     },
     {
         "slug": "powell-river-texada",
-        "name": "Powell River \u2014 Texada Island",
+        "name": "Powell River and Texada Island",
         "outbound": "pwr-tex", "inbound": "tex-pwr",
         "outboundLabel": "Powell River", "inboundLabel": "Texada Island",
     },
@@ -261,19 +261,19 @@ SUNSHINE_COAST_CORRIDORS = [
 MID_ISLAND_CORRIDORS = [
     {
         "slug": "brentwood-bay-mill-bay",
-        "name": "Brentwood Bay \u2014 Mill Bay",
+        "name": "Brentwood Bay and Mill Bay",
         "outbound": "btw-mil", "inbound": "mil-btw",
         "outboundLabel": "Brentwood Bay", "inboundLabel": "Mill Bay",
     },
     {
         "slug": "buckley-bay-denman-island",
-        "name": "Buckley Bay \u2014 Denman Island",
+        "name": "Buckley Bay and Denman Island",
         "outbound": "bky-dnm", "inbound": "dnm-bky",
         "outboundLabel": "Buckley Bay", "inboundLabel": "Denman Island",
     },
     {
         "slug": "denman-island-hornby-island",
-        "name": "Denman Island \u2014 Hornby Island",
+        "name": "Denman Island and Hornby Island",
         "outbound": "dne-hrn", "inbound": "hrn-dne",
         "outboundLabel": "Denman Island", "inboundLabel": "Hornby Island",
     },
@@ -282,19 +282,19 @@ MID_ISLAND_CORRIDORS = [
 NORTH_ISLAND_CORRIDORS = [
     {
         "slug": "campbell-river-quadra-island",
-        "name": "Campbell River \u2014 Quadra Island",
+        "name": "Campbell River and Quadra Island",
         "outbound": "cam-qdr", "inbound": "qdr-cam",
         "outboundLabel": "Campbell River", "inboundLabel": "Quadra Island",
     },
     {
         "slug": "heriot-bay-cortes-island",
-        "name": "Heriot Bay \u2014 Cortes Island",
+        "name": "Heriot Bay and Cortes Island",
         "outbound": "hrb-cor", "inbound": "cor-hrb",
         "outboundLabel": "Heriot Bay (Quadra)", "inboundLabel": "Cortes Island",
     },
     {
         "slug": "port-mcneill-alert-bay-sointula",
-        "name": "Port McNeill \u2014 Alert Bay / Sointula",
+        "name": "Port McNeill and Alert Bay / Sointula",
         "outbound": "mcn-alr", "inbound": "alr-mcn",
         "outboundLabel": "Port McNeill", "inboundLabel": "Alert Bay",
     },
@@ -303,25 +303,25 @@ NORTH_ISLAND_CORRIDORS = [
 NORTH_COAST_CORRIDORS = [
     {
         "slug": "port-hardy-prince-rupert",
-        "name": "Port Hardy \u2014 Prince Rupert (Inside Passage)",
+        "name": "Port Hardy and Prince Rupert (Inside Passage)",
         "outbound": "pph-ppr", "inbound": "ppr-pph",
         "outboundLabel": "Port Hardy", "inboundLabel": "Prince Rupert",
     },
     {
         "slug": "port-hardy-bella-coola",
-        "name": "Port Hardy \u2014 Bella Coola (Central Coast)",
+        "name": "Port Hardy and Bella Coola (Central Coast)",
         "outbound": "pph-bec", "inbound": "bec-pph",
         "outboundLabel": "Port Hardy", "inboundLabel": "Bella Coola",
     },
     {
         "slug": "prince-rupert-haida-gwaii",
-        "name": "Prince Rupert \u2014 Skidegate (Haida Gwaii)",
+        "name": "Prince Rupert and Skidegate (Haida Gwaii)",
         "outbound": "ppr-psk", "inbound": "psk-ppr",
         "outboundLabel": "Prince Rupert", "inboundLabel": "Skidegate",
     },
     {
         "slug": "skidegate-alliford-bay",
-        "name": "Skidegate \u2014 Alliford Bay",
+        "name": "Skidegate and Alliford Bay",
         "outbound": "psk-alf", "inbound": "alf-psk",
         "outboundLabel": "Skidegate", "inboundLabel": "Alliford Bay",
     },
