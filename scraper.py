@@ -817,8 +817,11 @@ def get_upcoming_sailings(route, limit=7):
             today_weekday = now.isoweekday()
             schedule = get_seasonal_schedule(route)
             day_sailings = schedule["sailings"][today_weekday]
-            if not day_sailings and schedule["sailings"][1]:
-                day_sailings = schedule["sailings"][1]
+            if not day_sailings:
+                for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
+                    if schedule["sailings"][fallback_day]:
+                        day_sailings = schedule["sailings"][fallback_day]
+                        break
             for s in day_sailings:
                 dep = s["scheduledDeparture"]
                 if dep and not _is_excluded(s, today):
@@ -880,8 +883,11 @@ def get_upcoming_sailings(route, limit=7):
                 tomorrow_weekday = 7
             schedule = get_seasonal_schedule(route)
             tmr_sailings = schedule["sailings"][tomorrow_weekday]
-            if not tmr_sailings and schedule["sailings"][1]:
-                tmr_sailings = schedule["sailings"][1]
+            if not tmr_sailings:
+                for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
+                    if schedule["sailings"][fallback_day]:
+                        tmr_sailings = schedule["sailings"][fallback_day]
+                        break
             for s in tmr_sailings:
                 dep = s.get("scheduledDeparture")
                 if dep and (dep["hour"], dep["minute"]) not in cc_tmr_times and not _is_excluded(s, tomorrow):
@@ -909,8 +915,11 @@ def get_upcoming_sailings(route, limit=7):
             tomorrow_weekday = 7
 
         today_sailings = schedule["sailings"][today_weekday]
-        if not today_sailings and schedule["sailings"][1]:
-            today_sailings = schedule["sailings"][1]
+        if not today_sailings:
+            for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
+                if schedule["sailings"][fallback_day]:
+                    today_sailings = schedule["sailings"][fallback_day]
+                    break
         for s in today_sailings:
             dep = s["scheduledDeparture"]
             if dep and not _is_excluded(s, today):
@@ -925,8 +934,11 @@ def get_upcoming_sailings(route, limit=7):
 
         if len(result["sailings"][0]) < limit:
             tomorrow_sailings = schedule["sailings"][tomorrow_weekday]
-            if not tomorrow_sailings and schedule["sailings"][1]:
-                tomorrow_sailings = schedule["sailings"][1]
+            if not tomorrow_sailings:
+                for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
+                    if schedule["sailings"][fallback_day]:
+                        tomorrow_sailings = schedule["sailings"][fallback_day]
+                        break
             for s in tomorrow_sailings:
                 dep = s["scheduledDeparture"]
                 if dep and not _is_excluded(s, tomorrow):
@@ -1025,9 +1037,13 @@ def get_sailings_for_date(route, days_ahead):
         schedule = get_seasonal_schedule(route)
         result["dateRange"] = schedule["dateRange"]
         day_sailings = schedule["sailings"][target_weekday]
-        # Fallback: if no sailings for this weekday, use Monday (weekday 1) as default
-        if not day_sailings and schedule["sailings"][1]:
-            day_sailings = schedule["sailings"][1]
+        if not day_sailings:
+            # Fall back to any weekday that has data (e.g. when schedule only
+            # covers the last day or two of a period, Monday may be empty too)
+            for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
+                if schedule["sailings"][fallback_day]:
+                    day_sailings = schedule["sailings"][fallback_day]
+                    break
         for s in day_sailings:
             s = copy.deepcopy(s)
             dep = s["scheduledDeparture"]
