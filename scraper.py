@@ -8,7 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from data import ROUTES, VESSELS, TERMINALS, WEEKDAYS, MONTHS, MONTH_NAMES, ISLAND_SHORT_NAMES, SGI_RETURN_TERMINALS, SGI_CAMERAS, EXTRA_CAMERAS
+from data import ROUTES, VESSELS, TERMINALS, WEEKDAYS, MONTHS, MONTH_NAMES, ISLAND_SHORT_NAMES, SGI_RETURN_TERMINALS, SWB_SGI_RETURN_TERMINALS, SGI_CAMERAS, EXTRA_CAMERAS
 from ais import get_vessel_tracking
 
 PACIFIC = ZoneInfo("America/Vancouver")
@@ -100,6 +100,27 @@ def _parse_except_dates(text):
             day = int(dm.group(2))
             if month:
                 dates.add((month, day))
+    return dates
+
+
+def _parse_only_on_dates(text):
+    """Parse 'Only on Apr 6, 20, May 4 & 18' into a set of (month, day) tuples.
+    A month carries forward for bare day numbers until a new month is named."""
+    m = re.match(r"Only on (.+)", text, re.IGNORECASE)
+    if not m:
+        return set()
+    dates_text = m.group(1).replace("&", ",")
+    dates = set()
+    current_month = None
+    for part in re.split(r",\s*", dates_text):
+        part = part.strip()
+        dm = re.match(r"([A-Za-z]+)\s+(\d+)", part)
+        if dm:
+            current_month = MONTHS.get(dm.group(1).lower()[:3])
+            if current_month:
+                dates.add((current_month, int(dm.group(2))))
+        elif current_month and re.match(r"^\d+$", part):
+            dates.add((current_month, int(part)))
     return dates
 
 
@@ -311,12 +332,14 @@ def _parse_seasonal_schedule(soup):
 
         warning = ""
         except_dates = set()
+        only_dates = set()
         if warning_header and warning_body:
             warning = f"{warning_header}: {warning_body}"
         elif warning_header:
             warning = warning_header
         for text in (warning_header, warning_body, warning):
             except_dates |= _parse_except_dates(text)
+            only_dates |= _parse_only_on_dates(text)
 
         sailing = {
             "messages": {"friendlyTime": _fmt_time(depart["hour"], depart["minute"])},
@@ -337,6 +360,7 @@ def _parse_seasonal_schedule(soup):
             "transferAt": None,
             "warning": "",
             "exceptDates": list(except_dates),
+            "onlyOnDates": list(only_dates),
         }
 
         if current_day and current_day <= 7:
@@ -478,10 +502,14 @@ def parse_cc_tomorrow(route, cc_data):
 
 
 def _is_excluded(sailing, target_date):
-    """Check if a sailing is excluded on a given date via 'Except on' dates."""
-    except_dates = sailing.get("exceptDates", [])
-    for md in except_dates:
+    """Check if a sailing is excluded on a given date.
+    Handles both 'Except on' (blacklist) and 'Only on' (whitelist) annotations."""
+    for md in sailing.get("exceptDates", []):
         if md[0] == target_date.month and md[1] == target_date.day:
+            return True
+    only_dates = sailing.get("onlyOnDates", [])
+    if only_dates:
+        if not any(md[0] == target_date.month and md[1] == target_date.day for md in only_dates):
             return True
     return False
 
@@ -509,9 +537,11 @@ def _check_schedule_validity(date_range, target_date):
 
 
 def _strip_except_text(warning):
-    """Remove 'Except on ...' text from a warning string — it's only useful for
-    backend filtering, not for display to the user."""
-    return re.sub(r"Except on .+", "", warning, flags=re.IGNORECASE).rstrip(": ").strip()
+    """Remove 'Except on ...' and 'Only on ...' text — only useful for backend
+    filtering, not for display to the user."""
+    warning = re.sub(r"Except on .+", "", warning, flags=re.IGNORECASE)
+    warning = re.sub(r"Only on .+", "", warning, flags=re.IGNORECASE)
+    return warning.rstrip(": ").strip()
 
 
 # Terminals that appear as alternating destinations on multi-stop routes where
@@ -656,13 +686,116 @@ def get_upcoming_sailings(route, limit=7):
                     if len(result["sailings"][0]) >= limit:
                         break
 
+    elif route == "sgi-swb":
+        # Special case: merge sailings from individual SGI island terminals to SWB
+        all_today = []
+        all_tomorrow = []
+        for terminal in SWB_SGI_RETURN_TERMINALS:
+            url = f"{CC_API}/api/currentconditions/1.0/route/{terminal['from']}/route{terminal['id']}"
+            try:
+                resp = _new_session().get(url, timeout=15)
+                cc_data = resp.json()
+            except Exception:
+                continue
+            tmp_route = f"{terminal['from']}-swb"
+            tmp_info = {"from": terminal["from"], "to": "swb", "id": terminal["id"]}
+            ROUTES[tmp_route] = tmp_info
+            today_s, _ = parse_cc_today(tmp_route, cc_data)
+            for s in today_s:
+                if "swb" in s.get("destinations", []):
+                    s["from"] = terminal["from"]
+                    all_today.append(s)
+            tmr_url = f"{CC_API}/api/currentconditions/1.0/sc/route/{terminal['from']}/{terminal['id']}"
+            try:
+                resp = _new_session().get(tmr_url, timeout=15)
+                tmr_data = resp.json()
+            except Exception:
+                tmr_data = []
+            tmr_s = parse_cc_tomorrow(tmp_route, tmr_data)
+            for s in tmr_s:
+                if "swb" in s.get("destinations", []):
+                    s["from"] = terminal["from"]
+                    all_tomorrow.append(s)
+            del ROUTES[tmp_route]
+
+        for s in sorted(all_today, key=lambda x: (x.get("scheduledDeparture", {}).get("hour", 0), x.get("scheduledDeparture", {}).get("minute", 0))):
+            dep = s.get("scheduledDeparture")
+            if dep:
+                sailing_dt = _sailing_datetime(dep)
+                if sailing_dt >= now:
+                    s["messages"] = {
+                        "friendlyTime": _fmt_time(dep["hour"], dep["minute"]),
+                        "relativeTime": _relative_time(sailing_dt),
+                        "relativeDay": "Today",
+                    }
+                    _add_extras_to_messages(s)
+                    from_name = ISLAND_SHORT_NAMES.get(s["from"])
+                    if from_name:
+                        s["messages"]["fromIsland"] = from_name
+                    result["sailings"][0].append(s)
+
+        if len(result["sailings"][0]) < limit:
+            for s in sorted(all_tomorrow, key=lambda x: (x.get("scheduledDeparture", {}).get("hour", 0), x.get("scheduledDeparture", {}).get("minute", 0))):
+                dep = s.get("scheduledDeparture")
+                if dep:
+                    sailing_dt = _sailing_datetime(dep, days_ahead=1)
+                    s["messages"] = {
+                        "friendlyTime": _fmt_time(dep["hour"], dep["minute"]),
+                        "relativeTime": _relative_time(sailing_dt),
+                        "relativeDay": "Tomorrow",
+                    }
+                    _add_extras_to_messages(s)
+                    from_name = ISLAND_SHORT_NAMES.get(s["from"])
+                    if from_name:
+                        s["messages"]["fromIsland"] = from_name
+                    result["sailings"][0].append(s)
+
+        swb_sched = get_seasonal_schedule(f"swb-{SWB_SGI_RETURN_TERMINALS[0]['from']}")
+        result["dateRange"] = swb_sched["dateRange"]
+        result["extraCameras"] = SGI_CAMERAS
+
+        if len(result["sailings"][0]) < limit:
+            tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
+            if tomorrow_weekday == 8:
+                tomorrow_weekday = 7
+            island_sailings = []
+            for terminal in SWB_SGI_RETURN_TERMINALS:
+                route_code = f"{terminal['from']}-swb"
+                schedule = get_seasonal_schedule(route_code)
+                for s in schedule["sailings"][tomorrow_weekday]:
+                    s = copy.deepcopy(s)
+                    s["from"] = terminal["from"]
+                    island_sailings.append(s)
+            island_sailings.sort(key=lambda x: (x.get("scheduledDeparture", {}).get("hour", 0), x.get("scheduledDeparture", {}).get("minute", 0)))
+            for s in island_sailings:
+                dep = s["scheduledDeparture"]
+                if dep:
+                    sailing_dt = _sailing_datetime(dep, days_ahead=1)
+                    s["messages"] = {
+                        "friendlyTime": _fmt_time(dep["hour"], dep["minute"]),
+                        "relativeTime": _relative_time(sailing_dt),
+                        "relativeDay": "Tomorrow",
+                    }
+                    from_name = ISLAND_SHORT_NAMES.get(s["from"])
+                    if from_name:
+                        s["messages"]["fromIsland"] = from_name
+                    result["sailings"][0].append(s)
+                    if len(result["sailings"][0]) >= limit:
+                        break
+
     elif route in ROUTES:
         # Use real-time CC API
         cc_data = get_current_conditions(route)
         today_sailings, cameras = parse_cc_today(route, cc_data)
         result["terminalCameras"] = cameras
-        # Pull dateRange from seasonal schedule so UI can show schedule end date
-        seasonal = get_seasonal_schedule(route)
+        # SGI combined routes don't have their own seasonal page; use an individual
+        # island page for the dateRange only.
+        if route in ("tsa-sgi", "swb-sgi"):
+            from_code = route.split("-")[0]
+            island_code = SWB_SGI_RETURN_TERMINALS[0]["from"] if route == "swb-sgi" else SGI_RETURN_TERMINALS[0]["from"]
+            seasonal = get_seasonal_schedule(f"{from_code}-{island_code}")
+        else:
+            seasonal = get_seasonal_schedule(route)
         result["dateRange"] = seasonal["dateRange"]
 
         # Filter to upcoming only and add messages
@@ -809,6 +942,7 @@ def get_upcoming_sailings(route, limit=7):
     # Strip internal fields and enrich with vessel tracking
     for s in result["sailings"][0]:
         s.pop("exceptDates", None)
+        s.pop("onlyOnDates", None)
         s["warning"] = _strip_except_text(s.get("warning", ""))
         # Add live vessel tracking for realtime sailings with a known vessel
         vessel = s.get("vessel")
@@ -834,12 +968,16 @@ def get_sailings_for_date(route, days_ahead):
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     day_label = day_names[target_weekday - 1]
 
-    if route in ("sgi-tsa", "tsa-sgi"):
-        # SGI routes: merge from individual island schedule pages
+    if route in ("sgi-tsa", "tsa-sgi", "sgi-swb", "swb-sgi"):
+        # SGI routes: merge schedules from individual island pages
         if route == "sgi-tsa":
             island_routes = [(t["from"], "tsa") for t in SGI_RETURN_TERMINALS]
-        else:
+        elif route == "tsa-sgi":
             island_routes = [("tsa", t["from"]) for t in SGI_RETURN_TERMINALS]
+        elif route == "sgi-swb":
+            island_routes = [(t["from"], "swb") for t in SWB_SGI_RETURN_TERMINALS]
+        else:  # swb-sgi
+            island_routes = [("swb", t["from"]) for t in SWB_SGI_RETURN_TERMINALS]
 
         island_sailings = []
         sgi_date_range = None
@@ -850,20 +988,20 @@ def get_sailings_for_date(route, days_ahead):
                 sgi_date_range = schedule["dateRange"]
             for s in schedule["sailings"][target_weekday]:
                 s = copy.deepcopy(s)
-                if route == "sgi-tsa":
+                if route in ("sgi-tsa", "sgi-swb"):
                     s["from"] = from_code
                 island_sailings.append(s)
         island_sailings.sort(key=lambda x: (x.get("scheduledDeparture", {}).get("hour", 0), x.get("scheduledDeparture", {}).get("minute", 0)))
 
-        # Deduplicate sailings with the same departure time (same ferry, multiple island pages)
+        # Deduplicate outbound sailings (same ferry appears on multiple island pages)
         seen_times = set()
         for s in island_sailings:
             dep = s["scheduledDeparture"]
             if dep and not _is_excluded(s, target_date):
                 time_key = (dep["hour"], dep["minute"])
-                if route == "tsa-sgi" and time_key in seen_times:
+                if route in ("tsa-sgi", "swb-sgi") and time_key in seen_times:
                     continue
-                if route == "tsa-sgi":
+                if route in ("tsa-sgi", "swb-sgi"):
                     seen_times.add(time_key)
                 sailing_dt = _sailing_datetime(dep, days_ahead=days_ahead)
                 s["messages"] = {
@@ -871,11 +1009,12 @@ def get_sailings_for_date(route, days_ahead):
                     "relativeTime": _relative_time(sailing_dt),
                     "relativeDay": day_label,
                 }
-                if route == "sgi-tsa":
+                if route in ("sgi-tsa", "sgi-swb"):
                     from_name = ISLAND_SHORT_NAMES.get(s.get("from"))
                     if from_name:
                         s["messages"]["fromIsland"] = from_name
                 s.pop("exceptDates", None)
+                s.pop("onlyOnDates", None)
                 s["warning"] = _strip_except_text(s.get("warning", ""))
                 result["sailings"][0].append(s)
         result["extraCameras"] = SGI_CAMERAS
@@ -900,6 +1039,7 @@ def get_sailings_for_date(route, days_ahead):
                     "relativeDay": day_label,
                 }
                 s.pop("exceptDates", None)
+                s.pop("onlyOnDates", None)
                 s["warning"] = _strip_except_text(s.get("warning", ""))
                 result["sailings"][0].append(s)
         warning = _check_schedule_validity(schedule["dateRange"], target_date)

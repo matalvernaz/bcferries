@@ -77,12 +77,20 @@ ROUTES = {
     "duk-tsa": {"from": "duk", "to": "tsa", "id": "30"},
 }
 
-# SGI return: multiple island terminals feeding into one route
+# SGI return terminals for Route 09 (islands → Tsawwassen)
 SGI_RETURN_TERMINALS = [
     {"from": "plh", "id": "09", "name": "Salt Spring"},
     {"from": "psb", "id": "09", "name": "Galiano"},
     {"from": "pvb", "id": "09", "name": "Mayne"},
     {"from": "pob", "id": "09", "name": "Pender"},
+]
+
+# SGI return terminals for Route 05 (islands → Swartz Bay)
+SWB_SGI_RETURN_TERMINALS = [
+    {"from": "plh", "id": "05", "name": "Salt Spring"},
+    {"from": "psb", "id": "05", "name": "Galiano"},
+    {"from": "pvb", "id": "05", "name": "Mayne"},
+    {"from": "pob", "id": "05", "name": "Pender"},
 ]
 
 TERMINALS = {
@@ -484,8 +492,11 @@ VESSELS = {
     "her": {"code": "her", "name": "Salish Heron"},
     "how": {"code": "how", "name": "Howe Sound Queen"},
     "iau": {"code": "iau", "name": "Island Aurora"},
+    "ids": {"code": "ids", "name": "Island Discovery"},
     "igw": {"code": "igw", "name": "Island Gwawis"},
+    "ikt": {"code": "ikt", "name": "Island K'ulut'a"},
     "ikw": {"code": "ikw", "name": "Island Kwigwis"},
+    "ing": {"code": "ing", "name": "Island Nagalis"},
     "ins": {"code": "ins", "name": "Coastal Inspiration"},
     "kah": {"code": "kah", "name": "Kahloke"},
     "kli": {"code": "kli", "name": "Klitsa"},
@@ -515,8 +526,8 @@ VESSELS = {
     "sky": {"code": "sky", "name": "Malaspina Sky"},
     "sur": {"code": "sur", "name": "Queen of Surrey"},
     "svi": {"code": "svi", "name": "Spirit of Vancouver Island"},
-    "tac": {"code": "tac", "name": "M.V. Tachek"},
-    "ten": {"code": "ten", "name": "M. V. Tenaka"},
+    "tac": {"code": "tac", "name": "Tachek"},
+    "ten": {"code": "ten", "name": "Tenaka"},
     "tsa": {"code": "tsa", "name": "Queen of Tsawwassen"},
     "van": {"code": "van", "name": "Queen of Vancouver"},
 }
