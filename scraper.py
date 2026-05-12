@@ -8,7 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from data import ROUTES, VESSELS, WEEKDAYS, MONTHS, MONTH_NAMES, ISLAND_SHORT_NAMES, SGI_RETURN_TERMINALS, SGI_CAMERAS, EXTRA_CAMERAS
+from data import ROUTES, VESSELS, TERMINALS, WEEKDAYS, MONTHS, MONTH_NAMES, ISLAND_SHORT_NAMES, SGI_RETURN_TERMINALS, SGI_CAMERAS, EXTRA_CAMERAS
 from ais import get_vessel_tracking
 
 PACIFIC = ZoneInfo("America/Vancouver")
@@ -514,6 +514,11 @@ def _strip_except_text(warning):
     return re.sub(r"Except on .+", "", warning, flags=re.IGNORECASE).rstrip(": ").strip()
 
 
+# Terminals that appear as alternating destinations on multi-stop routes where
+# the specific destination is ambiguous from the corridor name alone.
+_AMBIGUOUS_TERMINALS = {"tht", "kpr", "alr", "soi"}
+
+
 def _add_extras_to_messages(sailing):
     """Add capacity and island stops to sailing messages if available."""
     cap = _capacity_text(sailing.get("full"))
@@ -521,7 +526,7 @@ def _add_extras_to_messages(sailing):
         sailing["messages"]["capacity"] = cap
 
     dests = sailing.get("destinations", [])
-    # Deduplicate while preserving order
+    # SGI routes: list all island stops alphabetically
     seen = set()
     unique = []
     for d in dests:
@@ -530,6 +535,14 @@ def _add_extras_to_messages(sailing):
             unique.append(ISLAND_SHORT_NAMES[d])
     if unique:
         sailing["messages"]["stops"] = ", ".join(sorted(unique))
+        return
+
+    # Non-SGI multi-stop routes (e.g. Chemainus↔Thetis/Penelakut,
+    # Port McNeill↔Alert Bay/Sointula): show which terminal this sailing goes to.
+    if dests and dests[0] in _AMBIGUOUS_TERMINALS:
+        dest_name = TERMINALS.get(dests[0])
+        if dest_name:
+            sailing["messages"]["toIsland"] = dest_name
 
 
 def get_upcoming_sailings(route, limit=7):

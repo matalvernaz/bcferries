@@ -140,6 +140,7 @@
         if (dur) text += ', ' + dur;
         if (s.vessel && s.vessel.name) text += ', ' + s.vessel.name;
         if (s.messages.fromIsland) text += ', from ' + s.messages.fromIsland;
+        if (s.messages.toIsland) text += ', to ' + s.messages.toIsland;
         if (s.messages.stops) text += ', stops: ' + s.messages.stops;
         return text;
     }
