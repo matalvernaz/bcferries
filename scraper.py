@@ -522,7 +522,7 @@ def _add_extras_to_messages(sailing):
             seen.add(d)
             unique.append(ISLAND_SHORT_NAMES[d])
     if unique:
-        sailing["messages"]["stops"] = ", ".join(unique)
+        sailing["messages"]["stops"] = ", ".join(sorted(unique))
 
 
 def get_upcoming_sailings(route, limit=7):
@@ -683,9 +683,15 @@ def get_upcoming_sailings(route, limit=7):
         if len(result["sailings"][0]) < limit:
             tomorrow_data = get_tomorrow_conditions(route)
             tomorrow_sailings = parse_cc_tomorrow(route, tomorrow_data)
+            tmr_existing = {(s["scheduledDeparture"]["hour"], s["scheduledDeparture"]["minute"])
+                            for s in result["sailings"][0] if s.get("scheduledDeparture")}
             for s in tomorrow_sailings:
                 dep = s.get("scheduledDeparture")
                 if dep:
+                    key = (dep["hour"], dep["minute"])
+                    if key in tmr_existing:
+                        continue
+                    tmr_existing.add(key)
                     sailing_dt = _sailing_datetime(dep, days_ahead=1)
                     s["messages"] = {
                         "friendlyTime": _fmt_time(dep["hour"], dep["minute"]),
