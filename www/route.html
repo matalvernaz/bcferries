@@ -344,10 +344,12 @@
                 }
                 summary.textContent = summaryText;
 
-                remaining.forEach(function(s) {
+                remaining.forEach(function(s, idx) {
                     var li = document.createElement('li');
-                    var text = s.messages.friendlyTime +
-                        ' (' + s.messages.relativeTime + ')';
+                    var text = s.messages.friendlyTime;
+                    if (idx === 0) {
+                        text += ' (' + s.messages.relativeTime + ')';
+                    }
 
                     if (currentDaysAhead === 0 && s.messages.relativeDay) {
                         text = s.messages.relativeDay + ': ' + text;
