@@ -28,6 +28,7 @@
     </div>
 </div>
 <p class="schedule-warning" id="schedule-warning" hidden></p>
+<p class="schedule-range" id="schedule-range" hidden></p>
 
 <div id="main">
     <div class="columns">
@@ -40,7 +41,7 @@
             </div>
             <ul class="sailing-list" id="outbound-sailings">
                 <li class="loading">Loading&#8230;</li>
-            </ol>
+            </ul>
         </div>
 
         <div class="direction">
@@ -52,7 +53,7 @@
             </div>
             <ul class="sailing-list" id="inbound-sailings">
                 <li class="loading">Loading&#8230;</li>
-            </ol>
+            </ul>
         </div>
     </div>
 </div>
@@ -72,6 +73,7 @@
     // Build date options
     var daySelect = document.getElementById('day-select');
     var limitSelect = document.getElementById('limit-select');
+    var scheduleRangeEl = document.getElementById('schedule-range');
     var dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     for (var i = 0; i <= 7; i++) {
@@ -90,7 +92,7 @@
     }
 
     daySelect.addEventListener('change', function() {
-        currentDaysAhead = parseInt(this.value);
+        currentDaysAhead = parseInt(this.value, 10);
         var warningEl = document.getElementById('schedule-warning');
         if (currentDaysAhead === 0) {
             warningEl.hidden = true;
@@ -103,7 +105,7 @@
     });
 
     limitSelect.addEventListener('change', function() {
-        currentLimit = parseInt(this.value);
+        currentLimit = parseInt(this.value, 10);
         loadSailings();
     });
 
@@ -112,6 +114,47 @@
         if (currentDaysAhead === 0) {
             refreshTimer = setInterval(loadSailings, 60000);
         }
+    }
+
+    // Format {year, month, day} dict from the API into "May 31, 2026"
+    function formatApiDate(d) {
+        var m = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return m[d.month] + ' ' + d.day + ', ' + d.year;
+    }
+
+    // Format {hour, minute} duration dict into "1 hr 35 min"
+    function formatDuration(dur) {
+        if (!dur) return '';
+        var h = dur.hour || 0;
+        var m = dur.minute || 0;
+        if (h && m) return h + ' hr ' + m + ' min';
+        if (h) return h + ' hr';
+        if (m) return m + ' min';
+        return '';
+    }
+
+    // Append SGI stops, fromIsland, and duration to a text string
+    function appendSailingDetails(text, s) {
+        var dur = s.scheduledDuration ? formatDuration(s.scheduledDuration) : '';
+        if (dur) text += ', ' + dur;
+        if (s.messages.fromIsland) text += ', from ' + s.messages.fromIsland;
+        if (s.messages.stops) text += ', stops: ' + s.messages.stops;
+        return text;
+    }
+
+    // Show the seasonal schedule date range once (called per direction, idempotent)
+    function updateScheduleRange(dateRange) {
+        if (!scheduleRangeEl || !dateRange || !dateRange.to) return;
+        var text = 'Schedule valid';
+        if (dateRange.from) {
+            text += ' ' + formatApiDate(dateRange.from) + ' – ' + formatApiDate(dateRange.to);
+        } else {
+            text += ' through ' + formatApiDate(dateRange.to);
+        }
+        text += '.';
+        scheduleRangeEl.textContent = text;
+        scheduleRangeEl.hidden = false;
     }
 
     fetch('/api/v3/corridors')
@@ -203,7 +246,6 @@
         img.id = prefix + '-cam-img';
         var caption = document.createElement('figcaption');
         caption.className = 'camera-caption';
-        caption.setAttribute('aria-hidden', 'true');
         caption.hidden = true;
         figure.appendChild(img);
         figure.appendChild(caption);
@@ -249,7 +291,10 @@
         }
 
         fetch(url)
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function(data) {
                 var list = document.getElementById(prefix + '-sailings');
                 var summary = document.getElementById(prefix + '-next');
@@ -262,6 +307,9 @@
                     warningEl.hidden = false;
                 }
 
+                // Show seasonal schedule date range
+                updateScheduleRange(data.dateRange);
+
                 var sailings = data.sailings[0];
                 if (!sailings || sailings.length === 0) {
                     list.innerHTML = '<li>No sailings found for this date.</li>';
@@ -272,24 +320,30 @@
                 // Build summary from first sailing
                 var first = sailings[0];
                 var summaryText;
+                var remaining;
                 if (currentDaysAhead === 0) {
                     summaryText = 'Next sailing from ' + dirLabel + ': ' +
                         first.messages.friendlyTime +
                         ' (' + first.messages.relativeTime + ')';
+                    summaryText = appendSailingDetails(summaryText, first);
+                    if (first.messages.capacity) summaryText += ', ' + first.messages.capacity;
+                    if (first.vesselTracking && first.vesselTracking.text) {
+                        summaryText += '. ' + first.vesselTracking.text;
+                    }
+                    if (first.warning) summaryText += ', ' + first.warning;
+                    // First sailing is shown in the summary; list the rest
+                    remaining = sailings.slice(1);
                 } else {
                     summaryText = sailings.length + ' sailing' +
                         (sailings.length !== 1 ? 's' : '') +
-                        ' from ' + dirLabel;
+                        ' from ' + dirLabel +
+                        '. First: ' + first.messages.friendlyTime;
+                    summaryText = appendSailingDetails(summaryText, first);
+                    // For future dates show all sailings in the list
+                    remaining = sailings;
                 }
-                if (first.messages.capacity) summaryText += ', ' + first.messages.capacity;
-                if (first.vesselTracking && first.vesselTracking.text) {
-                    summaryText += '. ' + first.vesselTracking.text;
-                }
-                if (first.warning) summaryText += ', ' + first.warning;
                 summary.textContent = summaryText;
 
-                // List remaining sailings (first is already in summary)
-                var remaining = sailings.length > 1 ? sailings.slice(1) : sailings;
                 remaining.forEach(function(s) {
                     var li = document.createElement('li');
                     var text = s.messages.friendlyTime +
@@ -299,16 +353,10 @@
                         text = s.messages.relativeDay + ': ' + text;
                     }
 
+                    text = appendSailingDetails(text, s);
+
                     if (s.messages.capacity) {
                         text += ', ' + s.messages.capacity;
-                    }
-
-                    if (s.messages.fromIsland) {
-                        text += ', from ' + s.messages.fromIsland;
-                    }
-
-                    if (s.messages.stops) {
-                        text += ', stops: ' + s.messages.stops;
                     }
 
                     li.textContent = text;

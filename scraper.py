@@ -556,7 +556,7 @@ def get_upcoming_sailings(route, limit=7):
             # Tomorrow
             tmr_url = f"{CC_API}/api/currentconditions/1.0/sc/route/{terminal['from']}/{terminal['id']}"
             try:
-                resp = _session.get(tmr_url, timeout=15)
+                resp = _new_session().get(tmr_url, timeout=15)
                 tmr_data = resp.json()
             except Exception:
                 tmr_data = []
