@@ -603,6 +603,10 @@ def get_upcoming_sailings(route, limit=7):
 
         result["extraCameras"] = SGI_CAMERAS
 
+        # Pull dateRange from one island's seasonal schedule
+        sgi_sched = get_seasonal_schedule(f"{SGI_RETURN_TERMINALS[0]['from']}-tsa")
+        result["dateRange"] = sgi_sched["dateRange"]
+
         # If still not enough, fall back to seasonal schedules from each island
         if len(result["sailings"][0]) < limit:
             tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
@@ -637,6 +641,9 @@ def get_upcoming_sailings(route, limit=7):
         cc_data = get_current_conditions(route)
         today_sailings, cameras = parse_cc_today(route, cc_data)
         result["terminalCameras"] = cameras
+        # Pull dateRange from seasonal schedule so UI can show schedule end date
+        seasonal = get_seasonal_schedule(route)
+        result["dateRange"] = seasonal["dateRange"]
 
         # Filter to upcoming only and add messages
         for s in today_sailings:
