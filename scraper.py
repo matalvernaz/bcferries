@@ -679,19 +679,36 @@ def get_upcoming_sailings(route, limit=7):
                         }
                         result["sailings"][0].append(s)
 
-        # If we need more, get tomorrow from CC API
+        # Build a duration lookup from today's sailings so we can fill in
+        # duration for tomorrow sailings when the CC tomorrow API lacks it.
+        today_duration_by_time = {
+            (s["scheduledDeparture"]["hour"], s["scheduledDeparture"]["minute"]): s["scheduledDuration"]
+            for s in result["sailings"][0]
+            if s.get("scheduledDeparture") and s.get("scheduledDuration")
+        }
+
+        # If we need more, get tomorrow from CC API.
+        # cc_tmr_times tracks what we've added so we can (a) dedup within the
+        # CC tomorrow response itself (the CC API sometimes returns the same
+        # departure time twice for multi-stop routes) and (b) avoid re-adding
+        # the same time from the seasonal fallback below.  We intentionally do
+        # NOT seed it from today's sailings — same clock time on different days
+        # is a different sailing.
+        cc_tmr_times = set()
         if len(result["sailings"][0]) < limit:
             tomorrow_data = get_tomorrow_conditions(route)
             tomorrow_sailings = parse_cc_tomorrow(route, tomorrow_data)
-            tmr_existing = {(s["scheduledDeparture"]["hour"], s["scheduledDeparture"]["minute"])
-                            for s in result["sailings"][0] if s.get("scheduledDeparture")}
             for s in tomorrow_sailings:
                 dep = s.get("scheduledDeparture")
                 if dep:
                     key = (dep["hour"], dep["minute"])
-                    if key in tmr_existing:
+                    if key in cc_tmr_times:
                         continue
-                    tmr_existing.add(key)
+                    cc_tmr_times.add(key)
+                    # CC tomorrow API has no arrival time; copy duration from
+                    # the matching today sailing (same route, same time = same trip).
+                    if s.get("scheduledDuration") is None and key in today_duration_by_time:
+                        s["scheduledDuration"] = today_duration_by_time[key]
                     sailing_dt = _sailing_datetime(dep, days_ahead=1)
                     s["messages"] = {
                         "friendlyTime": _fmt_time(dep["hour"], dep["minute"]),
@@ -701,7 +718,9 @@ def get_upcoming_sailings(route, limit=7):
                     _add_extras_to_messages(s)
                     result["sailings"][0].append(s)
 
-        # If still not enough, fall back to seasonal schedule for tomorrow
+        # If still not enough, fall back to seasonal schedule for tomorrow.
+        # Dedup only against CC tomorrow times (not today's), since same
+        # clock time on a different day is a distinct sailing.
         if len(result["sailings"][0]) < limit:
             tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
             if tomorrow_weekday == 8:
@@ -710,15 +729,9 @@ def get_upcoming_sailings(route, limit=7):
             tmr_sailings = schedule["sailings"][tomorrow_weekday]
             if not tmr_sailings and schedule["sailings"][1]:
                 tmr_sailings = schedule["sailings"][1]
-            # Only add sailings we don't already have (by departure time)
-            existing_times = set()
-            for s in result["sailings"][0]:
-                dep = s.get("scheduledDeparture")
-                if dep:
-                    existing_times.add((dep["hour"], dep["minute"]))
             for s in tmr_sailings:
                 dep = s.get("scheduledDeparture")
-                if dep and (dep["hour"], dep["minute"]) not in existing_times and not _is_excluded(s, tomorrow):
+                if dep and (dep["hour"], dep["minute"]) not in cc_tmr_times and not _is_excluded(s, tomorrow):
                     s = copy.deepcopy(s)
                     sailing_dt = _sailing_datetime(dep, days_ahead=1)
                     s["messages"] = {
