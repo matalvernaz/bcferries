@@ -134,10 +134,11 @@
         return '';
     }
 
-    // Append SGI stops, fromIsland, and duration to a text string
+    // Append duration, vessel, SGI stops/fromIsland to a text string
     function appendSailingDetails(text, s) {
         var dur = s.scheduledDuration ? formatDuration(s.scheduledDuration) : '';
         if (dur) text += ', ' + dur;
+        if (s.vessel && s.vessel.name) text += ', ' + s.vessel.name;
         if (s.messages.fromIsland) text += ', from ' + s.messages.fromIsland;
         if (s.messages.stops) text += ', stops: ' + s.messages.stops;
         return text;

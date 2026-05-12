@@ -292,6 +292,13 @@ def _parse_seasonal_schedule(soup):
 
         arrive = _parse_time_text(cells[2].get_text()) if len(cells) > 2 else None
         duration = _parse_duration(cells[3].get_text()) if len(cells) > 3 else None
+        # If the page has no explicit duration column, derive it from dep→arr
+        if depart and arrive and (duration is None or (duration["hour"] == 0 and duration["minute"] == 0)):
+            diff = (arrive["hour"] * 60 + arrive["minute"]) - (depart["hour"] * 60 + depart["minute"])
+            if diff < 0:
+                diff += 24 * 60  # overnight sailing
+            if diff > 0:
+                duration = {"hour": diff // 60, "minute": diff % 60}
 
         warning_header = ""
         warning_body = ""
