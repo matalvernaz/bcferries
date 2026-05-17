@@ -1,6 +1,6 @@
 services:
   bcferries:
-    build: .
+    image: ghcr.io/matalvernaz/bcferries:latest
     container_name: bcferries
     restart: unless-stopped
     environment:
