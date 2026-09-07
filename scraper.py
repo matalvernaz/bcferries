@@ -739,6 +739,7 @@ def get_upcoming_sailings(route, limit=7):
                 route_code = f"{terminal['from']}-tsa"
                 schedule = get_seasonal_schedule(route_code)
                 for s in schedule["sailings"][tomorrow_weekday]:
+                    s = copy.deepcopy(s)
                     s["from"] = terminal["from"]
                     island_sailings.append(s)
             island_sailings.sort(key=lambda x: (x.get("scheduledDeparture", {}).get("hour", 0), x.get("scheduledDeparture", {}).get("minute", 0)))

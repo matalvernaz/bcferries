@@ -158,6 +158,30 @@ def test_health_reports_degradation(env, monkeypatch):
     assert report["routes"][ROUTE]["lastFailureCause"]
 
 
+def test_sgi_fallback_does_not_pollute_the_stored_schedule(env, monkeypatch):
+    """The Gulf Islands fallback stamps a departure terminal onto each sailing.
+
+    Doing that in place would edit the stored schedule, so every later reader of
+    that island's timetable would see another island's terminal code.
+    """
+    scraper, store = env
+    serve(scraper, monkeypatch, fixture("seasonal_bow_hsb.html"), GOOD_URL)
+    monkeypatch.setattr(scraper, "get_current_conditions", lambda route: None)
+    monkeypatch.setattr(scraper, "get_tomorrow_conditions", lambda route: None)
+
+    island_route = f"{scraper.SGI_RETURN_TERMINALS[0]['from']}-tsa"
+    scraper.get_upcoming_sailings("sgi-tsa", limit=7)
+
+    stored = store.load(island_route)
+    assert stored, "expected the island's seasonal schedule to be stored"
+    # The parser emits "from": None on every sailing, so a real terminal code
+    # is the tell that a caller wrote through to the stored copy.
+    stamped = [
+        s.get("from") for day in stored[1]["sailings"] for s in day if s.get("from")
+    ]
+    assert not stamped, f"{len(stamped)} stored sailings stamped with {set(stamped)}"
+
+
 def test_health_flags_a_freshly_fetched_but_expired_period(env, monkeypatch):
     """The fixture's period ended in 2025; a recent fetch must not read healthy."""
     scraper, store = env
