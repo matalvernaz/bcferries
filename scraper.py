@@ -3,11 +3,15 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
+
+import store
 from data import ROUTES, VESSELS, TERMINALS, WEEKDAYS, MONTHS, MONTH_NAMES, ISLAND_SHORT_NAMES, SGI_RETURN_TERMINALS, SWB_SGI_RETURN_TERMINALS, SGI_CAMERAS, EXTRA_CAMERAS
 from ais import get_vessel_tracking
 
@@ -33,31 +37,85 @@ def _new_session():
 def _fetch_with_curl(url):
     """Fetch a bcferries.com page using curl with a temporary cookie jar
     so Queue-it waiting-room redirects are handled without stale cookies
-    causing redirect loops."""
+    causing redirect loops.
+
+    Returns (body, final_url). The final URL is load-bearing: the Queue-it
+    waiting room answers HTTP 200 with a body that names neither Queue-it nor
+    itself, so the off-domain redirect is the only reliable tell.
+    """
+    jar = body_file = None
     try:
         fd, jar = tempfile.mkstemp(prefix="bcf-", suffix=".jar")
+        os.close(fd)
+        fd, body_file = tempfile.mkstemp(prefix="bcf-body-", suffix=".html")
         os.close(fd)
         cmd = [
             "curl", "-s", "-L",
             "-c", jar, "-b", jar,
             "-H", f"User-Agent: {_UA}",
+            "-o", body_file,
+            "-w", "%{url_effective}",
             url,
         ]
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30
         )
-        try:
-            os.unlink(jar)
-        except OSError:
-            pass
-        return result.stdout
+        with open(body_file, encoding="utf-8", errors="replace") as fh:
+            return fh.read(), result.stdout.strip()
     except Exception as e:
         print(f"Schedule scrape error for {url}: {e}")
-        return ""
+        return "", ""
+    finally:
+        for path in (jar, body_file):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
-# Schedule cache: route -> (timestamp, schedule_dict)
-_schedule_cache = {}
+
 CACHE_TTL = 4 * 3600  # 4 hours
+# How long to wait before retrying a source that answered with an interception
+# page. Without this, refusing to cache the bad result would turn every request
+# into a fresh 30s curl against a wall that is not going to move.
+FAILURE_RETRY_TTL = 15 * 60
+
+_ALLOWED_FETCH_HOST_SUFFIX = "bcferries.com"
+
+
+def _detect_interception(html, final_url, soup):
+    """Return a reason string if a fetch did not reach the real schedule page.
+
+    Ordered by reliability: an empty body, then a redirect off bcferries.com
+    (the Queue-it waiting room, and any future wall that works the same way),
+    then a body that carries none of the DOM the parser needs.
+    """
+    if not html or not html.strip():
+        return "empty response"
+
+    host = urlparse(final_url or "").hostname or ""
+    if host and not (
+        host == _ALLOWED_FETCH_HOST_SUFFIX
+        or host.endswith("." + _ALLOWED_FETCH_HOST_SUFFIX)
+    ):
+        return f"redirected off-domain to {host}"
+
+    if soup is not None:
+        if soup.select_one(".seasonal-schedule-wrapper") is None and (
+            soup.select_one('[href="#dateRangeModal"]') is None
+        ):
+            return "response carries no schedule markup"
+
+    return None
+
+
+def _is_usable_schedule(schedule):
+    """A schedule worth persisting: it knows its period and has sailings."""
+    return bool(
+        schedule
+        and schedule.get("dateRange")
+        and any(schedule.get("sailings") or [])
+    )
 
 
 def _fmt_time(hour, minute):
@@ -237,27 +295,41 @@ def get_tomorrow_conditions(route):
 
 
 def get_seasonal_schedule(route):
-    """Scrape the seasonal schedule page for a route, with caching."""
-    cached = _schedule_cache.get(route)
+    """Scrape the seasonal schedule page for a route, with caching.
+
+    A stored schedule is only ever replaced by a better one. A fetch that was
+    intercepted, or that parsed to nothing, leaves the stored copy alone and is
+    reported through the health ledger \u2014 the source going behind a wall must
+    never cost us a timetable we already have.
+    """
+    cached = store.load(route)
     if cached and (time.time() - cached[0]) < CACHE_TTL:
         return cached[1]
 
+    failure = store.last_failure(route)
+    if failure and (time.time() - failure["at"]) < FAILURE_RETRY_TTL:
+        return cached[1] if cached else empty_schedule()
+
     url = f"{BCF_BASE}/routes-fares/schedules/seasonal/{route.upper()}"
-    html = _fetch_with_curl(url)
-    if not html:
-        print(f"Schedule scrape failed for {route}")
-        if cached:
-            return cached[1]
-        return empty_schedule()
+    html, final_url = _fetch_with_curl(url)
+    soup = BeautifulSoup(html, "html.parser") if html else None
 
-    soup = BeautifulSoup(html, "html.parser")
-    schedule = _parse_seasonal_schedule(soup)
+    reason = _detect_interception(html, final_url, soup)
+    if not reason:
+        schedule = _parse_seasonal_schedule(soup)
+        if not _is_usable_schedule(schedule):
+            reason = "page parsed to no sailings"
 
-    # Log when a schedule's date range changes
+    if reason:
+        served = "serving stored copy" if cached else "no stored copy to fall back on"
+        print(f"[schedule-blocked] {route.upper()}: {reason} \u2014 {served}")
+        store.note_failure(route, reason)
+        return cached[1] if cached else empty_schedule()
+
     def _fmt_date(d):
         return f"{MONTH_NAMES[d['month']]} {d['day']}, {d['year']}"
 
-    if cached and schedule["dateRange"] and cached[1].get("dateRange"):
+    if cached and cached[1].get("dateRange"):
         old_to = cached[1]["dateRange"]["to"]
         new_to = schedule["dateRange"]["to"]
         if old_to != new_to:
@@ -266,13 +338,13 @@ def get_seasonal_schedule(route):
                 f"from {_fmt_date(cached[1]['dateRange']['from'])}\u2013{_fmt_date(old_to)} "
                 f"to {_fmt_date(schedule['dateRange']['from'])}\u2013{_fmt_date(new_to)}"
             )
-    elif not cached and schedule["dateRange"]:
+    else:
         print(
             f"[schedule-loaded] {route.upper()}: "
             f"{_fmt_date(schedule['dateRange']['from'])}\u2013{_fmt_date(schedule['dateRange']['to'])}"
         )
 
-    _schedule_cache[route] = (time.time(), schedule)
+    store.save(route, schedule)
     return schedule
 
 
@@ -1066,21 +1138,38 @@ def get_sailings_for_date(route, days_ahead):
 
 
 def get_schedule(route):
-    """Get the full weekly schedule for a route."""
+    """Get the full weekly schedule for a route.
+
+    The seasonal timetable is the baseline for all seven days; the
+    current-conditions feed then overlays today with live capacity and delays.
+    The overlay is conditional because the feed only publishes departures from
+    the major terminal of each pair — for the return leg of a minor route it
+    returns nothing, and an unconditional overlay would blank out today.
+    """
+    schedule = get_seasonal_schedule(route)
+    weekly = empty_schedule()
+    weekly["dateRange"] = schedule.get("dateRange")
+    weekly["sailings"] = copy.deepcopy(schedule.get("sailings") or weekly["sailings"])
+    weekly["terminalCameras"] = schedule.get("terminalCameras")
+
     if route in ROUTES:
         cc_data = get_current_conditions(route)
         today_sailings, cameras = parse_cc_today(route, cc_data)
-        schedule = empty_schedule()
-        schedule["terminalCameras"] = cameras
-        now = datetime.now(PACIFIC)
-        for s in today_sailings:
-            dep = s.get("scheduledDeparture")
-            if dep:
-                s["messages"] = {"friendlyTime": _fmt_time(dep["hour"], dep["minute"])}
-            schedule["sailings"][now.isoweekday()].append(s)
-        return schedule
-    else:
-        return get_seasonal_schedule(route)
+        if cameras:
+            weekly["terminalCameras"] = cameras
+        if today_sailings:
+            for s in today_sailings:
+                dep = s.get("scheduledDeparture")
+                if dep:
+                    s["messages"] = {"friendlyTime": _fmt_time(dep["hour"], dep["minute"])}
+            weekly["sailings"][datetime.now(PACIFIC).isoweekday()] = today_sailings
+
+    warning = _check_schedule_validity(
+        weekly["dateRange"], datetime.now(PACIFIC).date()
+    )
+    if warning:
+        weekly["scheduleWarning"] = warning
+    return weekly
 
 
 def empty_schedule():
@@ -1089,3 +1178,44 @@ def empty_schedule():
         "sailings": [[], [], [], [], [], [], [], []],
         "terminalCameras": None,
     }
+
+
+# Warmer pacing: one route at a time with a gap between fetches, so filling all
+# 60 directions is spread over minutes rather than hammering the source.
+WARM_GAP_SEC = 5
+WARM_INTERVAL_SEC = 6 * 3600
+WARM_RETRY_INTERVAL_SEC = 20 * 60
+
+
+def warm_schedules():
+    """Fetch and persist the seasonal schedule for every route direction.
+
+    Returns the number of directions that have a stored schedule afterwards.
+    Without this the store only fills for routes someone happens to visit, so a
+    wall that outlasts a restart would leave most of the site empty.
+    """
+    routes = sorted(ROUTES)
+    for route in routes:
+        try:
+            get_seasonal_schedule(route)
+        except Exception as e:
+            print(f"[warm] {route}: {e}")
+        time.sleep(WARM_GAP_SEC)
+    stored = sum(1 for route in routes if store.load(route))
+    print(f"[warm] {stored}/{len(routes)} directions have a stored schedule")
+    return stored
+
+
+def _warm_loop():
+    while True:
+        stored = warm_schedules()
+        # Retry sooner while coverage is incomplete — that means the source is
+        # walled or flaky, and we want the timetables the moment it recovers.
+        complete = stored >= len(ROUTES)
+        time.sleep(WARM_INTERVAL_SEC if complete else WARM_RETRY_INTERVAL_SEC)
+
+
+def start_warmer():
+    """Start the schedule warmer in a background daemon thread."""
+    t = threading.Thread(target=_warm_loop, daemon=True)
+    t.start()

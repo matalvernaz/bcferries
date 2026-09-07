@@ -2,3 +2,6 @@
 __pycache__/
 deploy.sh
 deploy.sh
+.venv/
+data/
+.pytest_cache/

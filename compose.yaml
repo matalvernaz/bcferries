@@ -6,6 +6,12 @@ services:
     environment:
       - TZ=America/Vancouver
       - AIS_API_KEY=${AIS_API_KEY}
+      - BCF_CACHE_DIR=/app/data/schedules
+    volumes:
+      # Scraped timetables must outlive the container: the upstream schedule
+      # pages go behind a Queue-it waiting room during holiday surges, and a
+      # restart while the wall is up would otherwise leave the app with none.
+      - ./data:/app/data
     networks:
       - traefik
     healthcheck:

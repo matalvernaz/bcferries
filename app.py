@@ -1,13 +1,23 @@
 import requests as http_requests
 from flask import Flask, jsonify, request, send_from_directory
-from scraper import get_upcoming_sailings, get_sailings_for_date, get_schedule
+from scraper import (
+    get_upcoming_sailings,
+    get_sailings_for_date,
+    get_schedule,
+    start_warmer,
+)
 from data import TERMINALS_LIST, ALL_CORRIDORS, REGIONS, VESSELS
 import ais
+import store
 
 app = Flask(__name__, static_folder="www")
 
 # Start AIS vessel tracking listener
 ais.start()
+
+# Keep every route's seasonal schedule on disk, so a walled source can't leave
+# the site empty.
+start_warmer()
 
 
 @app.route("/")
@@ -148,6 +158,14 @@ def schedule(route, weekday):
     if result["dateRange"] and result["dateRange"]["to"]:
         resp.headers["Cache-Control"] = "public, max-age=3600"
     return resp
+
+
+@app.route("/health/schedules")
+def schedule_health():
+    """Per-route timetable freshness. 503 when any route has no fresh schedule
+    so an external check can alert without parsing logs."""
+    report = store.health()
+    return jsonify(report), (200 if report["healthy"] else 503)
 
 
 if __name__ == "__main__":
