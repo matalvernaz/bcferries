@@ -47,6 +47,65 @@ def serve(scraper, monkeypatch, body, final_url):
     monkeypatch.setattr(scraper, "_fetch_with_curl", lambda url: (body, final_url))
 
 
+def test_waiting_room_is_passed_by_following_its_js_redirect(env, monkeypatch):
+    """curl cannot execute the room's JS navigation; taking that hop gets in."""
+    scraper, _ = env
+    calls = []
+
+    def fake_curl(url, jar):
+        calls.append(url)
+        if "bcferries.com" in url and not calls[:-1]:
+            return fixture("queueit_waiting_room.html"), WALL_URL
+        if "queue-it.net" in url:
+            return fixture("seasonal_bow_hsb.html"), GOOD_URL
+        return fixture("queueit_waiting_room.html"), WALL_URL
+
+    monkeypatch.setattr(scraper, "_curl_once", fake_curl)
+    html, final = scraper._fetch_with_curl(
+        "https://www.bcferries.com/routes-fares/schedules/seasonal/BOW-HSB")
+
+    assert scraper._detect_interception(html, final, None) is None
+    assert len(calls) == 2, f"expected the room hop to be taken, got {calls}"
+    assert "queue-it.net" in calls[1]
+
+
+def test_queue_hop_target_is_decoded_from_the_room_body(env):
+    scraper, _ = env
+    body = fixture("queueit_waiting_room.html")
+    hop = scraper._queue_redirect_target(body, WALL_URL)
+
+    assert hop is not None
+    assert hop.startswith("https://bcferries.queue-it.net/")
+    # The encoded target must come back decoded, not double-escaped.
+    assert "e=roomschedules" in hop
+    assert "%3D" not in hop
+
+
+def test_stale_acceptance_cookie_is_discarded_and_retried(env, monkeypatch, tmp_path):
+    """A jar that lands us back in the room must be thrown away, not reused."""
+    scraper, _ = env
+    jar = tmp_path / "queueit.jar"
+    jar.write_text("stale")
+    monkeypatch.setattr(scraper, "QUEUE_JAR", str(jar))
+    seen = []
+
+    def fake_curl(url, j):
+        seen.append(url)
+        # Fail the room hop on the first attempt, succeed on the second.
+        if "queue-it.net" in url:
+            if len([u for u in seen if "queue-it.net" in u]) == 1:
+                return fixture("queueit_waiting_room.html"), WALL_URL
+            return fixture("seasonal_bow_hsb.html"), GOOD_URL
+        return fixture("queueit_waiting_room.html"), WALL_URL
+
+    monkeypatch.setattr(scraper, "_curl_once", fake_curl)
+    html, final = scraper._fetch_with_curl(
+        "https://www.bcferries.com/routes-fares/schedules/seasonal/BOW-HSB")
+
+    assert scraper._detect_interception(html, final, None) is None
+    assert not jar.exists() or jar.read_text() != "stale"
+
+
 def test_wall_response_is_not_treated_as_data(env, monkeypatch):
     scraper, _ = env
     serve(scraper, monkeypatch, fixture("queueit_waiting_room.html"), WALL_URL)

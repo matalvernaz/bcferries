@@ -60,6 +60,18 @@ def _path(route):
     return os.path.join(CACHE_DIR, f"{route}.json")
 
 
+def cache_path(name):
+    """Path for an auxiliary cache file, falling back to a temp dir.
+
+    Used for the Queue-it cookie jar: keeping it on the volume means an
+    acceptance cookie survives a restart, but it must not be the reason the
+    app fails to start when the volume is missing.
+    """
+    if _ensure_dir():
+        return os.path.join(CACHE_DIR, name)
+    return os.path.join(tempfile.gettempdir(), name)
+
+
 def load(route):
     """Return (fetched_at, schedule) for a route, or None if never stored."""
     with _lock:

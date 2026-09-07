@@ -8,7 +8,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import store
@@ -34,44 +34,92 @@ def _new_session():
     return s
 
 
-def _fetch_with_curl(url):
-    """Fetch a bcferries.com page using curl with a temporary cookie jar
-    so Queue-it waiting-room redirects are handled without stale cookies
-    causing redirect loops.
+QUEUE_JAR = store.cache_path("queueit.jar")
 
-    Returns (body, final_url). The final URL is load-bearing: the Queue-it
-    waiting room answers HTTP 200 with a body that names neither Queue-it nor
-    itself, so the off-domain redirect is the only reliable tell.
-    """
-    jar = body_file = None
+# The bounce page hands the next URL to the browser as
+# document.location.href = decodeURIComponent('...'), which curl will not
+# execute. Following it once is what earns the QueueITAccepted cookie.
+_QUEUE_REDIRECT_RE = re.compile(r"decodeURIComponent\('([^']+)'\)")
+
+# One shared cookie jar, so curl processes can't interleave writes to it.
+_fetch_lock = threading.Lock()
+
+
+def _curl_once(url, jar):
+    """Single curl fetch through a cookie jar. Returns (body, final_url)."""
+    body_file = None
     try:
-        fd, jar = tempfile.mkstemp(prefix="bcf-", suffix=".jar")
-        os.close(fd)
         fd, body_file = tempfile.mkstemp(prefix="bcf-body-", suffix=".html")
         os.close(fd)
-        cmd = [
-            "curl", "-s", "-L",
-            "-c", jar, "-b", jar,
-            "-H", f"User-Agent: {_UA}",
-            "-o", body_file,
-            "-w", "%{url_effective}",
-            url,
-        ]
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30
+            [
+                "curl", "-s", "-L",
+                "-c", jar, "-b", jar,
+                "-H", f"User-Agent: {_UA}",
+                "-o", body_file,
+                "-w", "%{url_effective}",
+                url,
+            ],
+            capture_output=True, text=True, timeout=30,
         )
         with open(body_file, encoding="utf-8", errors="replace") as fh:
             return fh.read(), result.stdout.strip()
-    except Exception as e:
-        print(f"Schedule scrape error for {url}: {e}")
-        return "", ""
     finally:
-        for path in (jar, body_file):
-            if path:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+        if body_file:
+            try:
+                os.unlink(body_file)
+            except OSError:
+                pass
+
+
+def _queue_redirect_target(html, final_url):
+    """The URL the waiting room's JS would navigate to, or None."""
+    m = _QUEUE_REDIRECT_RE.search(html or "")
+    if not m:
+        return None
+    origin = urlparse(final_url)
+    if not origin.hostname:
+        return None
+    return urljoin(f"{origin.scheme}://{origin.hostname}", unquote(m.group(1)))
+
+
+def _fetch_with_curl(url):
+    """Fetch a bcferries.com page, passing the Queue-it waiting room if present.
+
+    Returns (body, final_url). The final URL is load-bearing: the waiting room
+    answers HTTP 200 with a body that names neither Queue-it nor itself, so the
+    off-domain redirect is the only reliable tell that we did not arrive.
+
+    Passing the room takes one extra hop, which curl will not take on its own
+    because the waiting room navigates via JavaScript. That hop yields a
+    QueueITAccepted cookie, so the jar is persistent and later fetches go
+    straight through. A jar whose cookie has gone stale would land us back in
+    the room, so that case discards it and retries once from scratch.
+    """
+    with _fetch_lock:
+        try:
+            for attempt in (1, 2):
+                html, final_url = _curl_once(url, QUEUE_JAR)
+                if not _detect_interception(html, final_url, None):
+                    return html, final_url
+
+                hop = _queue_redirect_target(html, final_url)
+                if hop:
+                    html, final_url = _curl_once(hop, QUEUE_JAR)
+                    if not _detect_interception(html, final_url, None):
+                        return html, final_url
+
+                if attempt == 1:
+                    # Stale acceptance cookie, or the room moved us on to a
+                    # real queue. Start clean before giving up.
+                    try:
+                        os.unlink(QUEUE_JAR)
+                    except OSError:
+                        pass
+            return html, final_url
+        except Exception as e:
+            print(f"Schedule scrape error for {url}: {e}")
+            return "", ""
 
 
 CACHE_TTL = 4 * 3600  # 4 hours
