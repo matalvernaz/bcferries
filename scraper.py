@@ -342,6 +342,29 @@ def get_tomorrow_conditions(route):
         return None
 
 
+# "sgi" is a pseudo-terminal covering the Southern Gulf Islands as a group, so
+# these four have no seasonal page of their own \u2014 the callers that serve them
+# merge the four real island pages instead. Fetching them yields a page with no
+# timetable, which would otherwise be recorded as a permanent health failure.
+PSEUDO_TERMINAL_ROUTES = frozenset({"sgi-tsa", "tsa-sgi", "sgi-swb", "swb-sgi"})
+
+
+def _island_route_codes():
+    """The per-island slugs that stand in for the pseudo-terminal routes."""
+    codes = []
+    for terminal in SGI_RETURN_TERMINALS:
+        codes += [f"{terminal['from']}-tsa", f"tsa-{terminal['from']}"]
+    for terminal in SWB_SGI_RETURN_TERMINALS:
+        codes += [f"{terminal['from']}-swb", f"swb-{terminal['from']}"]
+    return codes
+
+
+def warmable_routes():
+    """Every route slug with a seasonal page worth keeping on disk."""
+    routes = set(ROUTES) - PSEUDO_TERMINAL_ROUTES
+    return sorted(routes | set(_island_route_codes()))
+
+
 def get_seasonal_schedule(route):
     """Scrape the seasonal schedule page for a route, with caching.
 
@@ -350,6 +373,9 @@ def get_seasonal_schedule(route):
     reported through the health ledger \u2014 the source going behind a wall must
     never cost us a timetable we already have.
     """
+    if route in PSEUDO_TERMINAL_ROUTES:
+        return empty_schedule()
+
     cached = store.load(route)
     if cached and (time.time() - cached[0]) < CACHE_TTL:
         return cached[1]
@@ -1239,11 +1265,11 @@ WARM_RETRY_INTERVAL_SEC = 20 * 60
 def warm_schedules():
     """Fetch and persist the seasonal schedule for every route direction.
 
-    Returns the number of directions that have a stored schedule afterwards.
-    Without this the store only fills for routes someone happens to visit, so a
-    wall that outlasts a restart would leave most of the site empty.
+    Returns (stored, total). Without this the store only fills for routes
+    someone happens to visit, so a wall that outlasts a restart would leave
+    most of the site empty.
     """
-    routes = sorted(ROUTES)
+    routes = warmable_routes()
     for route in routes:
         try:
             get_seasonal_schedule(route)
@@ -1252,15 +1278,15 @@ def warm_schedules():
         time.sleep(WARM_GAP_SEC)
     stored = sum(1 for route in routes if store.load(route))
     print(f"[warm] {stored}/{len(routes)} directions have a stored schedule")
-    return stored
+    return stored, len(routes)
 
 
 def _warm_loop():
     while True:
-        stored = warm_schedules()
+        stored, total = warm_schedules()
         # Retry sooner while coverage is incomplete — that means the source is
         # walled or flaky, and we want the timetables the moment it recovers.
-        complete = stored >= len(ROUTES)
+        complete = stored >= total
         time.sleep(WARM_INTERVAL_SEC if complete else WARM_RETRY_INTERVAL_SEC)
 
 

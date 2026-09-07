@@ -241,6 +241,38 @@ def test_sgi_fallback_does_not_pollute_the_stored_schedule(env, monkeypatch):
     assert not stamped, f"{len(stamped)} stored sailings stamped with {set(stamped)}"
 
 
+def test_pseudo_terminal_routes_are_never_fetched_or_marked_unhealthy(env, monkeypatch):
+    """"sgi" is a group, not a terminal — its pages carry no timetable.
+
+    Fetching them would record a failure that can never clear, holding
+    /health/schedules at 503 forever and making the alert permanent noise.
+    """
+    scraper, store = env
+    calls = []
+    monkeypatch.setattr(
+        scraper, "_fetch_with_curl",
+        lambda url: (calls.append(url), (fixture("seasonal_bow_hsb.html"), GOOD_URL))[1])
+
+    for route in sorted(scraper.PSEUDO_TERMINAL_ROUTES):
+        result = scraper.get_seasonal_schedule(route)
+        assert result["dateRange"] is None
+        assert store.last_failure(route) is None, f"{route} recorded a failure"
+
+    assert not calls, f"pseudo routes hit the network: {calls}"
+    assert store.health()["routesDegraded"] == []
+
+
+def test_warmer_covers_the_island_pages_and_skips_the_pseudo_routes(env):
+    scraper, _ = env
+    warmable = scraper.warmable_routes()
+
+    assert not (set(warmable) & scraper.PSEUDO_TERMINAL_ROUTES)
+    # The real sources the sgi-* routes are served from must be warmed.
+    for expected in ["plh-tsa", "tsa-plh", "plh-swb", "swb-plh"]:
+        assert expected in warmable, f"{expected} missing from the warm list"
+    assert len(warmable) == len(scraper.ROUTES) - 4 + 16
+
+
 def test_health_flags_a_freshly_fetched_but_expired_period(env, monkeypatch):
     """The fixture's period ended in 2025; a recent fetch must not read healthy."""
     scraper, store = env
