@@ -471,10 +471,10 @@ def _parse_seasonal_schedule(soup):
         warning_body = ""
         red_text = cells[1].select_one(".red-text")
         if red_text:
-            warning_header = red_text.get_text().strip()
+            warning_header = red_text.get_text(" ", strip=True)
         black_text = cells[1].select_one(".text-black")
         if black_text:
-            warning_body = black_text.get_text().strip()
+            warning_body = black_text.get_text(" ", strip=True)
 
         warning = ""
         except_dates = set()
@@ -483,6 +483,8 @@ def _parse_seasonal_schedule(soup):
             warning = f"{warning_header}: {warning_body}"
         elif warning_header:
             warning = warning_header
+        else:
+            warning = warning_body
         for text in (warning_header, warning_body, warning):
             except_dates |= _parse_except_dates(text)
             only_dates |= _parse_only_on_dates(text)
@@ -504,7 +506,7 @@ def _parse_seasonal_schedule(soup):
             "from": None,
             "destinations": [],
             "transferAt": None,
-            "warning": "",
+            "warning": warning,
             "exceptDates": list(except_dates),
             "onlyOnDates": list(only_dates),
         }
@@ -513,6 +515,15 @@ def _parse_seasonal_schedule(soup):
             schedule["sailings"][current_day].append(sailing)
 
     return schedule
+
+
+def _cc_warning(sailing, field):
+    """The live feed flags dangerous-goods trips separately from delay text."""
+    warning = (sailing.get(field) or "").strip()
+    if (sailing.get("sailingType") or "").strip().upper() == "DG":
+        restriction = "No passengers permitted - dangerous goods sailing."
+        return f"{restriction} {warning}".strip()
+    return warning
 
 
 def parse_cc_today(route, cc_data):
@@ -544,7 +555,7 @@ def parse_cc_today(route, cc_data):
             "from": sd.get("dept", "").lower(),
             "destinations": [sd.get("dest", "").lower()],
             "transferAt": sd.get("transferDept"),
-            "warning": sd.get("delayComments") or "",
+            "warning": _cc_warning(sd, "delayComments"),
         }
 
         try:
@@ -631,7 +642,7 @@ def parse_cc_tomorrow(route, cc_data):
             "from": sd.get("dept", "").lower(),
             "destinations": [sd.get("dest1", "").lower()],
             "transferAt": None,
-            "warning": sd.get("departureStatus") or "",
+            "warning": _cc_warning(sd, "departureStatus"),
         }
 
         if sd.get("departure"):
