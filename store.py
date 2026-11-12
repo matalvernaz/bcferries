@@ -140,6 +140,15 @@ def _period_expired(date_range):
         return None
 
 
+def period_ended(schedule):
+    """True when a stored schedule describes a period that is already over.
+
+    A schedule with no readable period counts as not ended, so it keeps the
+    ordinary cache time instead of being refetched every few minutes.
+    """
+    return bool(_period_expired((schedule or {}).get("dateRange")))
+
+
 def health():
     """Per-route freshness ledger for the /health/schedules endpoint."""
     if _ensure_dir():

@@ -44,8 +44,29 @@ _QUEUE_REDIRECT_RE = re.compile(r"decodeURIComponent\('([^']+)'\)")
 # One shared cookie jar, so curl processes can't interleave writes to it.
 _fetch_lock = threading.Lock()
 
+# How long one fetch may take, counting every curl it needs. A person waiting
+# on a page gets the short limit; the warmer, which nobody is waiting on, gets
+# a long one. On 2026-11-12 (a new season starting the day after Remembrance
+# Day) bcferries.com took 42 seconds to start sending TSA-SWB and 83 for
+# SWB-TSA, so a single 30-second limit could not refresh the two busiest pages
+# at all.
+REQUEST_FETCH_TIMEOUT_SEC = 30
+WARMER_FETCH_TIMEOUT_SEC = 180
+# The least a single curl is given once a fetch has used up its time, so the
+# last hop of a nearly finished fetch still gets a try.
+MIN_CURL_TIMEOUT_SEC = 1
 
-def _curl_once(url, jar):
+# The clock a fetch's time budget is measured on. A name of its own so a test
+# can stand in a clock that jumps.
+_monotonic = time.monotonic
+
+# How long a page request that already has a stored copy waits for the fetch
+# lock before serving that copy. The warmer can now hold the lock for minutes,
+# and a person should not sit behind it for a refresh they can do without.
+REQUEST_LOCK_WAIT_SEC = 5
+
+
+def _curl_once(url, jar, timeout=REQUEST_FETCH_TIMEOUT_SEC):
     """Single curl fetch through a cookie jar. Returns (body, final_url)."""
     body_file = None
     try:
@@ -60,7 +81,7 @@ def _curl_once(url, jar):
                 "-w", "%{url_effective}",
                 url,
             ],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=timeout,
         )
         with open(body_file, encoding="utf-8", errors="replace") as fh:
             return fh.read(), result.stdout.strip()
@@ -83,7 +104,7 @@ def _queue_redirect_target(html, final_url):
     return urljoin(f"{origin.scheme}://{origin.hostname}", unquote(m.group(1)))
 
 
-def _fetch_with_curl(url):
+def _fetch_with_curl(url, timeout=REQUEST_FETCH_TIMEOUT_SEC, lock_wait=None):
     """Fetch a bcferries.com page, passing the Queue-it waiting room if present.
 
     Returns (body, final_url). The final URL is load-bearing: the waiting room
@@ -95,34 +116,54 @@ def _fetch_with_curl(url):
     QueueITAccepted cookie, so the jar is persistent and later fetches go
     straight through. A jar whose cookie has gone stale would land us back in
     the room, so that case discards it and retries once from scratch.
+
+    ``timeout`` is the limit for the whole fetch, shared by every curl it
+    takes (up to four: the page and the room's hop, twice). Without that, four
+    slow curls in a row would hold the lock for four times the limit while
+    everyone else waited. ``lock_wait`` is how many seconds to wait for another
+    fetch to finish; None waits as long as it takes. When that wait runs out
+    nothing is fetched and the result is (None, None), which means "busy", not
+    "the source failed".
     """
-    with _fetch_lock:
-        try:
-            for attempt in (1, 2):
-                html, final_url = _curl_once(url, QUEUE_JAR)
+    if not _fetch_lock.acquire(timeout=-1 if lock_wait is None else lock_wait):
+        return None, None
+    deadline = _monotonic() + timeout
+
+    def time_left():
+        return max(MIN_CURL_TIMEOUT_SEC, deadline - _monotonic())
+
+    try:
+        for attempt in (1, 2):
+            html, final_url = _curl_once(url, QUEUE_JAR, timeout=time_left())
+            if not _detect_interception(html, final_url, None):
+                return html, final_url
+
+            hop = _queue_redirect_target(html, final_url)
+            if hop:
+                html, final_url = _curl_once(hop, QUEUE_JAR, timeout=time_left())
                 if not _detect_interception(html, final_url, None):
                     return html, final_url
 
-                hop = _queue_redirect_target(html, final_url)
-                if hop:
-                    html, final_url = _curl_once(hop, QUEUE_JAR)
-                    if not _detect_interception(html, final_url, None):
-                        return html, final_url
-
-                if attempt == 1:
-                    # Stale acceptance cookie, or the room moved us on to a
-                    # real queue. Start clean before giving up.
-                    try:
-                        os.unlink(QUEUE_JAR)
-                    except OSError:
-                        pass
-            return html, final_url
-        except Exception as e:
-            print(f"Schedule scrape error for {url}: {e}")
-            return "", ""
+            if attempt == 1:
+                # Stale acceptance cookie, or the room moved us on to a
+                # real queue. Start clean before giving up.
+                try:
+                    os.unlink(QUEUE_JAR)
+                except OSError:
+                    pass
+        return html, final_url
+    except Exception as e:
+        print(f"Schedule scrape error for {url}: {e}")
+        return "", ""
+    finally:
+        _fetch_lock.release()
 
 
 CACHE_TTL = 4 * 3600  # 4 hours
+# A stored copy whose period has ended is checked again this often instead of
+# every four hours. Not on every request: the source can go on publishing an
+# ended period for a while, and that must not turn into a fetch per page view.
+ENDED_PERIOD_RECHECK_SEC = 15 * 60
 # How long to wait before retrying a source that answered with an interception
 # page. Without this, refusing to cache the bad result would turn every request
 # into a fresh 30s curl against a wall that is not going to move.
@@ -365,27 +406,51 @@ def warmable_routes():
     return sorted(routes | set(_island_route_codes()))
 
 
-def get_seasonal_schedule(route):
+def get_seasonal_schedule(route, background=False):
     """Scrape the seasonal schedule page for a route, with caching.
 
     A stored schedule is only ever replaced by a better one. A fetch that was
     intercepted, or that parsed to nothing, leaves the stored copy alone and is
     reported through the health ledger \u2014 the source going behind a wall must
     never cost us a timetable we already have.
+
+    ``background`` is for the warmer, which nobody is waiting on. It gives a
+    slow source minutes instead of seconds, and it tries even when a page
+    request has just given up on the same route.
     """
     if route in PSEUDO_TERMINAL_ROUTES:
         return empty_schedule()
 
     cached = store.load(route)
-    if cached and (time.time() - cached[0]) < CACHE_TTL:
-        return cached[1]
+    if cached:
+        # A copy whose period is over is not fresh however recently it was
+        # fetched. Treating it as fresh for four hours is what left TSA-SWB on
+        # a one-day holiday timetable for most of 2026-11-12.
+        if store.period_ended(cached[1]):
+            fresh_for = ENDED_PERIOD_RECHECK_SEC
+        else:
+            fresh_for = CACHE_TTL
+        if (time.time() - cached[0]) < fresh_for:
+            return cached[1]
 
+    # The pause after a failure spares a person a 30-second wait against a
+    # wall on every request. The warmer has its own pacing and no one waiting,
+    # so a page request's failure must not lock it out as well.
     failure = store.last_failure(route)
-    if failure and (time.time() - failure["at"]) < FAILURE_RETRY_TTL:
+    if not background and failure and (time.time() - failure["at"]) < FAILURE_RETRY_TTL:
         return cached[1] if cached else empty_schedule()
 
     url = f"{BCF_BASE}/routes-fares/schedules/seasonal/{route.upper()}"
-    html, final_url = _fetch_with_curl(url)
+    if background:
+        html, final_url = _fetch_with_curl(url, timeout=WARMER_FETCH_TIMEOUT_SEC)
+    else:
+        # With a copy in hand, don't queue behind someone else's slow fetch.
+        lock_wait = REQUEST_LOCK_WAIT_SEC if cached else None
+        html, final_url = _fetch_with_curl(
+            url, timeout=REQUEST_FETCH_TIMEOUT_SEC, lock_wait=lock_wait)
+        if html is None:
+            # Busy, not failed: nothing is recorded against the source.
+            return cached[1] if cached else empty_schedule()
     soup = BeautifulSoup(html, "html.parser") if html else None
 
     reason = _detect_interception(html, final_url, soup)
@@ -1276,29 +1341,50 @@ WARM_RETRY_INTERVAL_SEC = 20 * 60
 def warm_schedules():
     """Fetch and persist the seasonal schedule for every route direction.
 
-    Returns (stored, total). Without this the store only fills for routes
-    someone happens to visit, so a wall that outlasts a restart would leave
-    most of the site empty.
+    Returns (current, total), where current counts the directions holding a
+    schedule whose period has not ended. Without this the store only fills for
+    routes someone happens to visit, so a wall that outlasts a restart would
+    leave most of the site empty.
     """
     routes = warmable_routes()
     for route in routes:
         try:
-            get_seasonal_schedule(route)
+            get_seasonal_schedule(route, background=True)
         except Exception as e:
             print(f"[warm] {route}: {e}")
         time.sleep(WARM_GAP_SEC)
-    stored = sum(1 for route in routes if store.load(route))
-    print(f"[warm] {stored}/{len(routes)} directions have a stored schedule")
-    return stored, len(routes)
+    stored = 0
+    current = 0
+    for route in routes:
+        entry = store.load(route)
+        if not entry:
+            continue
+        stored += 1
+        if not store.period_ended(entry[1]):
+            current += 1
+    print(
+        f"[warm] {stored}/{len(routes)} directions have a stored schedule, "
+        f"{current} of them for a period that has not ended"
+    )
+    return current, len(routes)
+
+
+def _next_warm_delay(current, total):
+    """Seconds until the next warm pass.
+
+    Retry sooner while coverage is incomplete — that means the source is
+    walled or flaky, and we want the timetables the moment it recovers. A
+    stored schedule whose period has ended counts as missing: it is the one
+    most likely to show a departure that no longer runs.
+    """
+    complete = current >= total
+    return WARM_INTERVAL_SEC if complete else WARM_RETRY_INTERVAL_SEC
 
 
 def _warm_loop():
     while True:
-        stored, total = warm_schedules()
-        # Retry sooner while coverage is incomplete — that means the source is
-        # walled or flaky, and we want the timetables the moment it recovers.
-        complete = stored >= total
-        time.sleep(WARM_INTERVAL_SEC if complete else WARM_RETRY_INTERVAL_SEC)
+        current, total = warm_schedules()
+        time.sleep(_next_warm_delay(current, total))
 
 
 def start_warmer():

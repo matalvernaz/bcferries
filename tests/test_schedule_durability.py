@@ -44,7 +44,7 @@ def env(tmp_path, monkeypatch):
 
 def serve(scraper, monkeypatch, body, final_url):
     """Point the scraper's fetch at a canned response."""
-    monkeypatch.setattr(scraper, "_fetch_with_curl", lambda url: (body, final_url))
+    monkeypatch.setattr(scraper, "_fetch_with_curl", lambda url, **options: (body, final_url))
 
 
 def test_waiting_room_is_passed_by_following_its_js_redirect(env, monkeypatch):
@@ -52,7 +52,7 @@ def test_waiting_room_is_passed_by_following_its_js_redirect(env, monkeypatch):
     scraper, _ = env
     calls = []
 
-    def fake_curl(url, jar):
+    def fake_curl(url, jar, timeout=None):
         calls.append(url)
         if "bcferries.com" in url and not calls[:-1]:
             return fixture("queueit_waiting_room.html"), WALL_URL
@@ -89,7 +89,7 @@ def test_stale_acceptance_cookie_is_discarded_and_retried(env, monkeypatch, tmp_
     monkeypatch.setattr(scraper, "QUEUE_JAR", str(jar))
     seen = []
 
-    def fake_curl(url, j):
+    def fake_curl(url, j, timeout=None):
         seen.append(url)
         # Fail the room hop on the first attempt, succeed on the second.
         if "queue-it.net" in url:
@@ -194,7 +194,7 @@ def test_repeated_walled_requests_do_not_refetch_every_time(env, monkeypatch):
     scraper, _ = env
     calls = []
 
-    def counting_fetch(url):
+    def counting_fetch(url, **options):
         calls.append(url)
         return fixture("queueit_waiting_room.html"), WALL_URL
 
@@ -251,7 +251,7 @@ def test_pseudo_terminal_routes_are_never_fetched_or_marked_unhealthy(env, monke
     calls = []
     monkeypatch.setattr(
         scraper, "_fetch_with_curl",
-        lambda url: (calls.append(url), (fixture("seasonal_bow_hsb.html"), GOOD_URL))[1])
+        lambda url, **options: (calls.append(url), (fixture("seasonal_bow_hsb.html"), GOOD_URL))[1])
 
     for route in sorted(scraper.PSEUDO_TERMINAL_ROUTES):
         result = scraper.get_seasonal_schedule(route)
