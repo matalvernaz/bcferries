@@ -91,9 +91,14 @@ def load(route):
     return entry
 
 
-def save(route, schedule):
-    """Persist a schedule for a route. Callers must only pass a validated one."""
-    fetched_at = time.time()
+def save(route, schedule, fetched_at=None):
+    """Persist a schedule for a route. Callers must only pass a validated one.
+
+    ``fetched_at`` keeps an earlier read time, for a change that adds to a
+    stored copy without reading its page again; otherwise it is now.
+    """
+    if fetched_at is None:
+        fetched_at = time.time()
     with _lock:
         _memory[route] = (fetched_at, schedule)
         _failures.pop(route, None)
@@ -140,13 +145,25 @@ def _period_expired(date_range):
         return None
 
 
+def _latest_range(schedule):
+    """The dateRange of the last period a stored schedule covers.
+
+    A route whose page showed a period with no timetable posted also holds the
+    period after it, under "next". The route has a timetable to serve until
+    that later period ends, so it is the one that decides.
+    """
+    schedule = schedule or {}
+    latest = schedule.get("next") or schedule
+    return latest.get("dateRange")
+
+
 def period_ended(schedule):
     """True when a stored schedule describes a period that is already over.
 
     A schedule with no readable period counts as not ended, so it keeps the
     ordinary cache time instead of being refetched every few minutes.
     """
-    return bool(_period_expired((schedule or {}).get("dateRange")))
+    return bool(_period_expired(_latest_range(schedule)))
 
 
 def health():
@@ -167,26 +184,37 @@ def health():
             failure = _failures.get(route)
             age = None if entry is None else now - entry[0]
             date_range = None if entry is None else entry[1].get("dateRange")
+            following = None if entry is None else entry[1].get("next")
             routes[route] = {
                 "hasSchedule": entry is not None,
                 "ageSeconds": None if age is None else int(age),
                 "stale": entry is None or age > STALE_AFTER,
-                "periodExpired": _period_expired(date_range),
+                "periodExpired": (
+                    None if entry is None else _period_expired(_latest_range(entry[1]))
+                ),
                 "dateRange": date_range,
+                "nextDateRange": None if following is None else following.get("dateRange"),
                 "lastFailureCause": None if failure is None else failure["cause"],
                 "lastFailureAgeSeconds": (
                     None if failure is None else int(now - failure["at"])
                 ),
+                # BC Ferries has published this period with no timetable, as
+                # for Pender Island during the Otter Bay berth closure. That
+                # is the source being right, not the app being broken, so it
+                # is reported here and not counted as degraded.
+                "notPosted": bool(entry is not None and entry[1].get("notPosted")),
             }
     degraded = sorted(
         r for r, v in routes.items() if v["stale"] or v["periodExpired"]
     )
+    not_posted = sorted(r for r, v in routes.items() if v["notPosted"])
     return {
         "cacheDir": CACHE_DIR,
         "cacheWritable": bool(_writable),
         "staleAfterSeconds": STALE_AFTER,
         "routesKnown": len(routes),
         "routesDegraded": degraded,
+        "routesNotPosted": not_posted,
         "healthy": not degraded and bool(routes),
         "routes": routes,
     }

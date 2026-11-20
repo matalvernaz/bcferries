@@ -34,6 +34,7 @@
     <div class="columns">
         <div class="direction">
             <h2 class="direction-heading" id="outbound-heading">From <span id="outbound-name">&#8230;</span></h2>
+            <div class="route-notices" id="outbound-notices" hidden></div>
             <div id="outbound-webcams" class="webcams"></div>
             <div id="outbound-camera-thumbs" class="camera-thumbs"></div>
             <div class="next-sailing-summary" id="outbound-next" aria-live="off">
@@ -46,6 +47,7 @@
 
         <div class="direction">
             <h2 class="direction-heading" id="inbound-heading">From <span id="inbound-name">&#8230;</span></h2>
+            <div class="route-notices" id="inbound-notices" hidden></div>
             <div id="inbound-webcams" class="webcams"></div>
             <div id="inbound-camera-thumbs" class="camera-thumbs"></div>
             <div class="next-sailing-summary" id="inbound-next" aria-live="off">
@@ -143,6 +145,51 @@
         if (s.messages.toIsland) text += ', to ' + s.messages.toIsland;
         if (s.messages.stops) text += ', stops: ' + s.messages.stops;
         return text;
+    }
+
+    // The notices last drawn for each direction. The list refreshes every
+    // minute; redrawing unchanged notices would pull a screen reader's
+    // reading position out from under the person reading them.
+    var drawnNotices = {};
+
+    // Show BC Ferries' notices for this direction: a period with no timetable
+    // posted, a closure. Text and links only, never the page's own markup.
+    function renderNotices(prefix, notices) {
+        var container = document.getElementById(prefix + '-notices');
+        if (!container) return;
+        var list = notices || [];
+        var key = JSON.stringify(list);
+        if (drawnNotices[prefix] === key) return;
+        drawnNotices[prefix] = key;
+
+        container.innerHTML = '';
+        list.forEach(function(notice) {
+            var block = document.createElement('div');
+            block.className = 'route-notice';
+            var text = document.createElement('p');
+            text.textContent = notice.text;
+            block.appendChild(text);
+
+            // Only https links, so nothing from the source can run script here.
+            var links = (notice.links || []).filter(function(link) {
+                return typeof link.url === 'string' && link.url.indexOf('https://') === 0;
+            });
+            if (links.length) {
+                var linkList = document.createElement('ul');
+                linkList.className = 'route-notice-links';
+                links.forEach(function(link) {
+                    var item = document.createElement('li');
+                    var anchor = document.createElement('a');
+                    anchor.href = link.url;
+                    anchor.textContent = link.text || link.url;
+                    item.appendChild(anchor);
+                    linkList.appendChild(item);
+                });
+                block.appendChild(linkList);
+            }
+            container.appendChild(block);
+        });
+        container.hidden = list.length === 0;
     }
 
     // Show the seasonal schedule date range once (called per direction, idempotent)
@@ -301,6 +348,8 @@
                 var list = document.getElementById(prefix + '-sailings');
                 var summary = document.getElementById(prefix + '-next');
                 list.innerHTML = '';
+
+                renderNotices(prefix, data.notices);
 
                 // Show schedule validity warning if the API flags it
                 if (data.scheduleWarning) {

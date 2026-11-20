@@ -202,6 +202,35 @@ a:hover, a:focus {
     margin-bottom: 0.75rem;
 }
 
+/* BC Ferries' notices for one direction: no timetable posted, a closure */
+.route-notices {
+    margin-bottom: 0.75rem;
+}
+
+.route-notice {
+    background: var(--color-schedule-warning-bg);
+    border-left: 4px solid var(--color-schedule-warning-border);
+    color: var(--color-schedule-warning-text);
+    padding: 0.5rem 0.85rem;
+    border-radius: 0 0.35rem 0.35rem 0;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+}
+
+.route-notice p {
+    margin: 0;
+}
+
+.route-notice-links {
+    margin: 0.4rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.route-notice a {
+    color: inherit;
+    font-weight: 600;
+}
+
 /* Two-column layout for route page */
 .columns {
     display: grid;

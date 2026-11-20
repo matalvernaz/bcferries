@@ -164,6 +164,11 @@ CACHE_TTL = 4 * 3600  # 4 hours
 # every four hours. Not on every request: the source can go on publishing an
 # ended period for a while, and that must not turn into a fetch per page view.
 ENDED_PERIOD_RECHECK_SEC = 15 * 60
+# A stored period BC Ferries has posted no timetable for is checked again this
+# often, since their page says they are working on it. Shorter than the
+# warmer's hourly pace while such a period is held (WARM_UNPOSTED_INTERVAL_SEC),
+# so every pass finds the copy due rather than skipping it for another hour.
+UNPOSTED_RECHECK_SEC = 45 * 60
 # How long to wait before retrying a source that answered with an interception
 # page. Without this, refusing to cache the bad result would turn every request
 # into a fresh 30s curl against a wall that is not going to move.
@@ -199,12 +204,108 @@ def _detect_interception(html, final_url, soup):
 
 
 def _is_usable_schedule(schedule):
-    """A schedule worth persisting: it knows its period and has sailings."""
-    return bool(
-        schedule
-        and schedule.get("dateRange")
-        and any(schedule.get("sailings") or [])
-    )
+    """A schedule worth persisting: it knows its period, and it either has
+    sailings or is BC Ferries saying in so many words that it has posted none
+    for that period. Any other empty page is a failure, so a broken or walled
+    page can never cost us a timetable already held."""
+    if not schedule or not schedule.get("dateRange"):
+        return False
+    if schedule.get("notPosted"):
+        return True
+    return any(schedule.get("sailings") or [])
+
+
+# BC Ferries' own words on a period it has no timetable for yet, as on the
+# Pender Island pages during the Otter Bay berth closure of 2026-11-20 to 24:
+# "Seasonal schedules have not been posted for these dates. We're working to
+# get them ready, try again soon."
+_NOT_POSTED_RE = re.compile(r"schedules have not been posted", re.IGNORECASE)
+
+# The most of a route notice worth keeping. They run to a few sentences; this
+# only stops a page that has gone wrong from filling the screen.
+NOTICE_MAX_CHARS = 1200
+
+
+def _clean_text(text):
+    """Collapse a page's whitespace and zero-width spaces into plain text."""
+    return re.sub(r"\s+", " ", (text or "").replace("​", "")).strip()
+
+
+def _says_not_posted(direction):
+    """True when this part of the page carries BC Ferries' "not posted" line."""
+    return direction.find(string=_NOT_POSTED_RE) is not None
+
+
+def _parse_periods(soup):
+    """The periods the page's date picker offers, each with BC Ferries' own
+    link to it. The picker is the only place the page names the period after
+    the one it shows, and following its link, rather than building one, keeps
+    working if BC Ferries changes how those links are put together."""
+    picker = soup.select_one("#dateRangeModal")
+    if picker is None:
+        return []
+    periods = []
+    for link in picker.select("a[href]"):
+        date_range = _parse_date_range(link.get_text(" ", strip=True))
+        if date_range is None:
+            continue
+        periods.append({"dateRange": date_range, "href": link["href"].strip()})
+    return periods
+
+
+def _parse_route_notice(container):
+    """BC Ferries' Important box for the route, as {"text", "links"}, or None.
+
+    It sits in the content slot just before the direction's timetable and is
+    empty on almost every page; during the Otter Bay closure it explained the
+    water taxi. It is free text from their CMS with no class of its own, so
+    this is best effort and nothing else depends on it: a box that can't be
+    read just isn't shown.
+    """
+    if container is None:
+        return None
+    slot = container.find_previous_sibling("section")
+    if slot is None:
+        return None
+    marked = slot.select_one(".bcf-icon-notice-outline") or slot.find("b", string="Important")
+    if marked is None:
+        return None
+
+    sentences = []
+    for paragraph in slot.find_all("p"):
+        text = _clean_text(paragraph.get_text())
+        link_text = _clean_text("".join(link.get_text() for link in paragraph.find_all("a")))
+        # A paragraph that is only a link is kept as the link below, so it
+        # isn't read out twice.
+        if not text or text == link_text:
+            continue
+        sentences.append(text)
+    text = " ".join(sentences)[:NOTICE_MAX_CHARS]
+    if not text:
+        return None
+
+    links = []
+    for anchor in slot.find_all("a", href=True):
+        url = urljoin(BCF_BASE + "/", anchor["href"].strip())
+        if urlparse(url).scheme != "https":
+            continue
+        if any(link["url"] == url for link in links):
+            continue
+        label = _clean_text(anchor.get_text()) or url
+        links.append({"text": label, "url": url})
+    return {"text": text, "links": links}
+
+
+def _spoken_range(date_range):
+    """A period the way it reads aloud: "Nov 20 to Nov 24, 2026", with the
+    first year too when the period crosses into a new one."""
+    start = date_range["from"]
+    end = date_range["to"]
+    first = f"{MONTH_NAMES[start['month']]} {start['day']}"
+    if start["year"] != end["year"]:
+        first += f", {start['year']}"
+    last = f"{MONTH_NAMES[end['month']]} {end['day']}, {end['year']}"
+    return f"{first} to {last}"
 
 
 def _fmt_time(hour, minute):
@@ -406,6 +507,139 @@ def warmable_routes():
     return sorted(routes | set(_island_route_codes()))
 
 
+# Set when a page request stores a period with no timetable posted, so the
+# warmer fetches the period after it now instead of at its next pass.
+_warm_now = threading.Event()
+
+
+def _as_date(day):
+    """A {year, month, day} dict from a page, as a date, or None."""
+    try:
+        return datetime(day["year"], day["month"], day["day"]).date()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _following_period(schedule):
+    """The period the date picker lists straight after the one a schedule
+    covers, or None."""
+    current = schedule.get("dateRange") or {}
+    current_end = _as_date(current.get("to"))
+    if current_end is None:
+        return None
+    later = []
+    for period in schedule.get("periods") or []:
+        start = _as_date(period["dateRange"].get("from"))
+        if start is not None and start > current_end:
+            later.append((start, period))
+    if not later:
+        return None
+    later.sort(key=lambda pair: pair[0])
+    return later[0][1]
+
+
+def _period_url(route, href):
+    """The full address of a date picker link, or None unless it stays on this
+    route's own timetable page at bcferries.com."""
+    url = urljoin(BCF_BASE + "/", href)
+    parts = urlparse(url)
+    if parts.scheme != "https" or parts.hostname != urlparse(BCF_BASE).hostname:
+        return None
+    if parts.path.rstrip("/").lower() != f"/routes-fares/schedules/seasonal/{route}".lower():
+        return None
+    return url
+
+
+def _same_period(held, period):
+    """True when ``held`` is the stored copy of the picker's ``period``."""
+    return bool(
+        held
+        and held.get("href") == period["href"]
+        and held.get("dateRange") == period["dateRange"]
+    )
+
+
+def _fetch_following_period(route, period):
+    """Fetch and read the period after the one a route's page shows, or None.
+
+    Only the warmer calls this: nobody is waiting on it, and a page request
+    already waits on one fetch. The page has to come back for the period the
+    link names; BC Ferries answering with some other period is not the next
+    timetable, however good it looks.
+    """
+    url = _period_url(route, period["href"])
+    if url is None:
+        print(
+            f"[schedule-next-blocked] {route.upper()}: the date picker's link "
+            f"leaves the route's own page, not followed"
+        )
+        return None
+    html, final_url = _fetch_with_curl(url, timeout=WARMER_FETCH_TIMEOUT_SEC)
+    soup = BeautifulSoup(html, "html.parser") if html else None
+    reason = _detect_interception(html, final_url, soup)
+    following = None
+    if not reason:
+        following = _parse_seasonal_schedule(soup)
+        if following.get("dateRange") != period["dateRange"]:
+            reason = "page came back for another period"
+        elif not _is_usable_schedule(following):
+            reason = "page parsed to no sailings"
+    if reason:
+        print(
+            f"[schedule-next-blocked] {route.upper()}: {reason} for "
+            f"{_spoken_range(period['dateRange'])}"
+        )
+        return None
+    print(f"[schedule-next] {route.upper()}: {_spoken_range(period['dateRange'])} loaded")
+    held = {
+        "href": period["href"],
+        "fetchedAt": time.time(),
+        "dateRange": following["dateRange"],
+        "sailings": following["sailings"],
+    }
+    if following.get("notPosted"):
+        held["notPosted"] = True
+    if following.get("notice"):
+        held["notice"] = following["notice"]
+    return held
+
+
+def _following_timetable(route, schedule, previous, fetch):
+    """The period after an unposted one, for storing under "next", or None.
+
+    A copy already held in ``previous`` is kept while the picker still lists
+    the same period, so a page request's refresh doesn't drop what the warmer
+    fetched. Only with ``fetch`` (the warmer) is the page fetched, when there
+    is no such copy or it is older than the cache time; if that fetch fails,
+    the copy held is kept.
+    """
+    period = _following_period(schedule)
+    if period is None:
+        return None
+    held = (previous or {}).get("next")
+    if not _same_period(held, period):
+        held = None
+    if not fetch:
+        return held
+    if held and time.time() - held.get("fetchedAt", 0) < CACHE_TTL:
+        return held
+    return _fetch_following_period(route, period) or held
+
+
+def _following_period_due(schedule):
+    """True when a stored unposted period lacks a current copy of the period
+    after it."""
+    if not schedule.get("notPosted"):
+        return False
+    period = _following_period(schedule)
+    if period is None:
+        return False
+    held = schedule.get("next")
+    if not _same_period(held, period):
+        return True
+    return time.time() - held.get("fetchedAt", 0) >= CACHE_TTL
+
+
 def get_seasonal_schedule(route, background=False):
     """Scrape the seasonal schedule page for a route, with caching.
 
@@ -416,7 +650,8 @@ def get_seasonal_schedule(route, background=False):
 
     ``background`` is for the warmer, which nobody is waiting on. It gives a
     slow source minutes instead of seconds, and it tries even when a page
-    request has just given up on the same route.
+    request has just given up on the same route. It is also the only caller
+    that fetches the period after one BC Ferries has posted no timetable for.
     """
     if route in PSEUDO_TERMINAL_ROUTES:
         return empty_schedule()
@@ -428,9 +663,14 @@ def get_seasonal_schedule(route, background=False):
         # a one-day holiday timetable for most of 2026-11-12.
         if store.period_ended(cached[1]):
             fresh_for = ENDED_PERIOD_RECHECK_SEC
+        elif cached[1].get("notPosted"):
+            # BC Ferries says it is still working on this timetable.
+            fresh_for = UNPOSTED_RECHECK_SEC
         else:
             fresh_for = CACHE_TTL
         if (time.time() - cached[0]) < fresh_for:
+            if background and _following_period_due(cached[1]):
+                return _complete_with_following_period(route, cached)
             return cached[1]
 
     # The pause after a failure spares a person a 30-second wait against a
@@ -483,26 +723,88 @@ def get_seasonal_schedule(route, background=False):
             f"{_fmt_date(schedule['dateRange']['from'])}\u2013{_fmt_date(schedule['dateRange']['to'])}"
         )
 
+    already_known = (
+        cached
+        and cached[1].get("notPosted")
+        and cached[1].get("dateRange") == schedule["dateRange"]
+    )
+    if schedule.get("notPosted") and not already_known:
+        print(
+            f"[schedule-not-posted] {route.upper()}: BC Ferries has not posted a "
+            f"timetable for {_spoken_range(schedule['dateRange'])}; no sailings "
+            f"are shown for those dates"
+        )
+
+    if schedule.get("notPosted"):
+        previous = cached[1] if cached else None
+        following = _following_timetable(route, schedule, previous, fetch=background)
+        if following:
+            schedule["next"] = following
+        elif not background:
+            _warm_now.set()
+
     store.save(route, schedule)
     return schedule
 
 
+def _complete_with_following_period(route, cached):
+    """Add the period after an unposted one to a copy that is otherwise fresh.
+
+    A page request stores the unposted period without it and wakes the
+    warmer, which lands here. The page itself is not read again, so the copy
+    keeps its read time and is re-checked on the usual schedule.
+    """
+    fetched_at, schedule = cached
+    following = _following_timetable(route, schedule, schedule, fetch=True)
+    if following is None or following is schedule.get("next"):
+        return schedule
+    completed = dict(schedule)
+    completed["next"] = following
+    store.save(route, completed, fetched_at=fetched_at)
+    return completed
+
+
 def _parse_seasonal_schedule(soup):
-    """Parse the seasonal schedule HTML into a schedule dict."""
+    """Parse the seasonal schedule HTML into a schedule dict.
+
+    The page carries both directions of the route, each in its own
+    ``.seasonalSchedulesContainer``, and the first is the one that was asked
+    for. Reading the whole page let the return direction's timetable stand in
+    whenever this one had none, which is exactly what happens when BC Ferries
+    has posted nothing for these dates. A page without the containers (older
+    captures, trimmed fixtures) is read whole, as before.
+    """
     schedule = empty_schedule()
 
     date_range_el = soup.select_one('[href="#dateRangeModal"]')
     if date_range_el:
         schedule["dateRange"] = _parse_date_range(date_range_el.get_text())
 
-    wrapper = soup.select_one(".seasonal-schedule-wrapper")
-    if not wrapper:
-        return schedule
+    container = soup.select_one(".seasonalSchedulesContainer")
+    direction = container if container is not None else soup
 
-    table = wrapper.select_one("table")
-    if not table:
-        return schedule
+    periods = _parse_periods(soup)
+    if periods:
+        schedule["periods"] = periods
 
+    notice = _parse_route_notice(container)
+    if notice:
+        schedule["notice"] = notice
+
+    wrapper = direction.select_one(".seasonal-schedule-wrapper")
+    table = wrapper.select_one("table") if wrapper else None
+    if table:
+        _read_timetable(table, schedule["sailings"])
+
+    if not any(schedule["sailings"]) and _says_not_posted(direction):
+        schedule["notPosted"] = True
+
+    return schedule
+
+
+def _read_timetable(table, sailings):
+    """Add each sailing in a seasonal timetable table to ``sailings``, which
+    holds one list per weekday, Monday at 1."""
     current_day = 0
     rows = table.select("tr")
 
@@ -577,9 +879,7 @@ def _parse_seasonal_schedule(soup):
         }
 
         if current_day and current_day <= 7:
-            schedule["sailings"][current_day].append(sailing)
-
-    return schedule
+            sailings[current_day].append(sailing)
 
 
 def _cc_warning(sailing, field):
@@ -758,6 +1058,133 @@ def _check_schedule_validity(date_range, target_date):
     return None
 
 
+def _period_for_date(schedule, target_date):
+    """The part of a route's stored timetable that covers ``target_date``, or
+    None when nothing does.
+
+    A route holds the period its page showed and, when BC Ferries posted no
+    timetable for that one, the period after it under "next". A date from the
+    later period's first day on is read from it. A date before the first day of
+    the period shown is not covered: showing a timetable early lists sailings
+    that may not run yet. A date after the last day keeps the old behaviour,
+    the timetable served with a warning that it has ended.
+    """
+    if not schedule:
+        return None
+    following = schedule.get("next")
+    if following:
+        start = _as_date((following.get("dateRange") or {}).get("from"))
+        if start is not None and target_date >= start:
+            return following
+    date_range = schedule.get("dateRange")
+    if date_range:
+        start = _as_date(date_range.get("from"))
+        if start is not None and target_date < start:
+            return None
+    return schedule
+
+
+def _sailings_on(schedule, target_date, fall_back=True):
+    """Copies of the timetable's sailings for ``target_date``'s weekday, from
+    the period that covers that date.
+
+    Copies, because callers decorate each sailing for display, and decorating
+    the stored ones in place stripped their "Except on" dates for every later
+    reader. ``fall_back`` keeps the old rule for a weekday the period has no
+    rows for: use the first weekday that has some. The Gulf Islands merges
+    never did that, so they pass False.
+    """
+    period = _period_for_date(schedule, target_date)
+    if period is None or period.get("notPosted"):
+        return []
+    grid = period.get("sailings") or []
+    weekday = target_date.isoweekday()
+    day_sailings = grid[weekday] if weekday < len(grid) else []
+    if not day_sailings and fall_back:
+        for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
+            if fallback_day < len(grid) and grid[fallback_day]:
+                day_sailings = grid[fallback_day]
+                break
+    return copy.deepcopy(day_sailings)
+
+
+def _range_on(schedule, target_date):
+    """The dateRange of the period covering ``target_date``, or the one the
+    page showed when none does."""
+    period = _period_for_date(schedule, target_date)
+    if period is None:
+        return (schedule or {}).get("dateRange")
+    return period.get("dateRange")
+
+
+def _period_notice(period, where=None):
+    """What to tell people about one period of a route, or None.
+
+    That is BC Ferries having posted no timetable for it, and the route's
+    Important box when the page had one. ``where`` names the island in the
+    Gulf Islands views, where "this route" alone would not say which.
+    """
+    if not period:
+        return None
+    parts = []
+    if period.get("notPosted") and period.get("dateRange"):
+        parts.append(
+            f"BC Ferries has not posted a timetable for {_spoken_range(period['dateRange'])}."
+        )
+    box = period.get("notice") or {}
+    if box.get("text"):
+        parts.append(box["text"])
+    if not parts:
+        return None
+    text = " ".join(parts)
+    if where:
+        text = f"{where}: {text}"
+    return {"text": text, "links": list(box.get("links") or [])}
+
+
+def _notices_on(schedule, dates, where=None):
+    """The notices for the periods covering ``dates``, each once."""
+    notices = []
+    for target_date in dates:
+        notice = _period_notice(_period_for_date(schedule, target_date), where)
+        if notice and notice not in notices:
+            notices.append(notice)
+    return notices
+
+
+def _island_routes(route):
+    """For a Gulf Islands route, each island's code with the route slug its own
+    page is kept under."""
+    if route == "sgi-tsa":
+        return [(t["from"], f"{t['from']}-tsa") for t in SGI_RETURN_TERMINALS]
+    if route == "tsa-sgi":
+        return [(t["from"], f"tsa-{t['from']}") for t in SGI_RETURN_TERMINALS]
+    if route == "sgi-swb":
+        return [(t["from"], f"{t['from']}-swb") for t in SWB_SGI_RETURN_TERMINALS]
+    if route == "swb-sgi":
+        return [(t["from"], f"swb-{t['from']}") for t in SWB_SGI_RETURN_TERMINALS]
+    return []
+
+
+def _island_notices(route, dates):
+    """The notices from each island's page in a Gulf Islands view, each naming
+    its island.
+
+    Read from the store, not fetched: the warmer keeps these pages, and the
+    live view should not wait on more fetches for a notice.
+    """
+    notices = []
+    for island, island_route in _island_routes(route):
+        entry = store.load(island_route)
+        if entry is None:
+            continue
+        where = TERMINALS.get(island, island.upper())
+        for notice in _notices_on(entry[1], dates, where):
+            if notice not in notices:
+                notices.append(notice)
+    return notices
+
+
 def _strip_except_text(warning):
     """Remove 'Except on ...' and 'Only on ...' text — only useful for backend
     filtering, not for display to the user."""
@@ -877,18 +1304,16 @@ def get_upcoming_sailings(route, limit=7):
 
         # Pull dateRange from one island's seasonal schedule
         sgi_sched = get_seasonal_schedule(f"{SGI_RETURN_TERMINALS[0]['from']}-tsa")
-        result["dateRange"] = sgi_sched["dateRange"]
+        result["dateRange"] = _range_on(sgi_sched, today)
+        result["notices"] = _island_notices(route, [today, tomorrow])
 
         # If still not enough, fall back to seasonal schedules from each island
         if len(result["sailings"][0]) < limit:
-            tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
-            if tomorrow_weekday == 8:
-                tomorrow_weekday = 7
             island_sailings = []
             for terminal in SGI_RETURN_TERMINALS:
                 route_code = f"{terminal['from']}-tsa"
                 schedule = get_seasonal_schedule(route_code)
-                for s in schedule["sailings"][tomorrow_weekday]:
+                for s in _sailings_on(schedule, tomorrow, fall_back=False):
                     s = copy.deepcopy(s)
                     s["from"] = terminal["from"]
                     island_sailings.append(s)
@@ -974,18 +1399,16 @@ def get_upcoming_sailings(route, limit=7):
                     result["sailings"][0].append(s)
 
         swb_sched = get_seasonal_schedule(f"swb-{SWB_SGI_RETURN_TERMINALS[0]['from']}")
-        result["dateRange"] = swb_sched["dateRange"]
+        result["dateRange"] = _range_on(swb_sched, today)
         result["extraCameras"] = SGI_CAMERAS
+        result["notices"] = _island_notices(route, [today, tomorrow])
 
         if len(result["sailings"][0]) < limit:
-            tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
-            if tomorrow_weekday == 8:
-                tomorrow_weekday = 7
             island_sailings = []
             for terminal in SWB_SGI_RETURN_TERMINALS:
                 route_code = f"{terminal['from']}-swb"
                 schedule = get_seasonal_schedule(route_code)
-                for s in schedule["sailings"][tomorrow_weekday]:
+                for s in _sailings_on(schedule, tomorrow, fall_back=False):
                     s = copy.deepcopy(s)
                     s["from"] = terminal["from"]
                     island_sailings.append(s)
@@ -1019,7 +1442,11 @@ def get_upcoming_sailings(route, limit=7):
             seasonal = get_seasonal_schedule(f"{from_code}-{island_code}")
         else:
             seasonal = get_seasonal_schedule(route)
-        result["dateRange"] = seasonal["dateRange"]
+        result["dateRange"] = _range_on(seasonal, today)
+        if route in ("tsa-sgi", "swb-sgi"):
+            result["notices"] = _island_notices(route, [today, tomorrow])
+        else:
+            result["notices"] = _notices_on(seasonal, [today, tomorrow])
 
         # Filter to upcoming only and add messages
         for s in today_sailings:
@@ -1037,14 +1464,8 @@ def get_upcoming_sailings(route, limit=7):
 
         # If CC API returned nothing for today, fall back to seasonal schedule
         if len(result["sailings"][0]) == 0:
-            today_weekday = now.isoweekday()
             schedule = get_seasonal_schedule(route)
-            day_sailings = schedule["sailings"][today_weekday]
-            if not day_sailings:
-                for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
-                    if schedule["sailings"][fallback_day]:
-                        day_sailings = schedule["sailings"][fallback_day]
-                        break
+            day_sailings = _sailings_on(schedule, today)
             for s in day_sailings:
                 dep = s["scheduledDeparture"]
                 if dep and not _is_excluded(s, today):
@@ -1101,16 +1522,8 @@ def get_upcoming_sailings(route, limit=7):
         # Dedup only against CC tomorrow times (not today's), since same
         # clock time on a different day is a distinct sailing.
         if len(result["sailings"][0]) < limit:
-            tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
-            if tomorrow_weekday == 8:
-                tomorrow_weekday = 7
             schedule = get_seasonal_schedule(route)
-            tmr_sailings = schedule["sailings"][tomorrow_weekday]
-            if not tmr_sailings:
-                for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
-                    if schedule["sailings"][fallback_day]:
-                        tmr_sailings = schedule["sailings"][fallback_day]
-                        break
+            tmr_sailings = _sailings_on(schedule, tomorrow)
             for s in tmr_sailings:
                 dep = s.get("scheduledDeparture")
                 if dep and (dep["hour"], dep["minute"]) not in cc_tmr_times and not _is_excluded(s, tomorrow):
@@ -1128,21 +1541,12 @@ def get_upcoming_sailings(route, limit=7):
     else:
         # Use seasonal schedule
         schedule = get_seasonal_schedule(route)
-        result["dateRange"] = schedule["dateRange"]
+        result["dateRange"] = _range_on(schedule, today)
+        result["notices"] = _notices_on(schedule, [today, tomorrow])
         if route in EXTRA_CAMERAS:
             result["terminalCameras"] = EXTRA_CAMERAS[route]
 
-        today_weekday = now.isoweekday()  # 1=Monday, 7=Sunday
-        tomorrow_weekday = (now + timedelta(days=1)).isoweekday()
-        if tomorrow_weekday == 8:
-            tomorrow_weekday = 7
-
-        today_sailings = schedule["sailings"][today_weekday]
-        if not today_sailings:
-            for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
-                if schedule["sailings"][fallback_day]:
-                    today_sailings = schedule["sailings"][fallback_day]
-                    break
+        today_sailings = _sailings_on(schedule, today)
         for s in today_sailings:
             dep = s["scheduledDeparture"]
             if dep and not _is_excluded(s, today):
@@ -1156,12 +1560,7 @@ def get_upcoming_sailings(route, limit=7):
                     result["sailings"][0].append(s)
 
         if len(result["sailings"][0]) < limit:
-            tomorrow_sailings = schedule["sailings"][tomorrow_weekday]
-            if not tomorrow_sailings:
-                for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
-                    if schedule["sailings"][fallback_day]:
-                        tomorrow_sailings = schedule["sailings"][fallback_day]
-                        break
+            tomorrow_sailings = _sailings_on(schedule, tomorrow)
             for s in tomorrow_sailings:
                 dep = s["scheduledDeparture"]
                 if dep and not _is_excluded(s, tomorrow):
@@ -1216,12 +1615,19 @@ def get_sailings_for_date(route, days_ahead):
 
         island_sailings = []
         sgi_date_range = None
+        notices = []
         for from_code, to_code in island_routes:
             route_code = f"{from_code}-{to_code}"
             schedule = get_seasonal_schedule(route_code)
-            if not sgi_date_range and schedule.get("dateRange"):
-                sgi_date_range = schedule["dateRange"]
-            for s in schedule["sailings"][target_weekday]:
+            island_range = _range_on(schedule, target_date)
+            if not sgi_date_range and island_range:
+                sgi_date_range = island_range
+            island = from_code if route in ("sgi-tsa", "sgi-swb") else to_code
+            where = TERMINALS.get(island, island.upper())
+            for notice in _notices_on(schedule, [target_date], where):
+                if notice not in notices:
+                    notices.append(notice)
+            for s in _sailings_on(schedule, target_date, fall_back=False):
                 s = copy.deepcopy(s)
                 if route in ("sgi-tsa", "sgi-swb"):
                     s["from"] = from_code
@@ -1253,20 +1659,17 @@ def get_sailings_for_date(route, days_ahead):
                 s["warning"] = _strip_except_text(s.get("warning", ""))
                 result["sailings"][0].append(s)
         result["extraCameras"] = SGI_CAMERAS
+        result["notices"] = notices
         warning = _check_schedule_validity(sgi_date_range, target_date)
         if warning:
             result["scheduleWarning"] = warning
     else:
         schedule = get_seasonal_schedule(route)
-        result["dateRange"] = schedule["dateRange"]
-        day_sailings = schedule["sailings"][target_weekday]
-        if not day_sailings:
-            # Fall back to any weekday that has data (e.g. when schedule only
-            # covers the last day or two of a period, Monday may be empty too)
-            for fallback_day in [1, 2, 3, 4, 5, 6, 7]:
-                if schedule["sailings"][fallback_day]:
-                    day_sailings = schedule["sailings"][fallback_day]
-                    break
+        result["dateRange"] = _range_on(schedule, target_date)
+        result["notices"] = _notices_on(schedule, [target_date])
+        # Falls back to any weekday that has data (e.g. when schedule only
+        # covers the last day or two of a period, Monday may be empty too)
+        day_sailings = _sailings_on(schedule, target_date)
         for s in day_sailings:
             s = copy.deepcopy(s)
             dep = s["scheduledDeparture"]
@@ -1281,7 +1684,7 @@ def get_sailings_for_date(route, days_ahead):
                 s.pop("onlyOnDates", None)
                 s["warning"] = _strip_except_text(s.get("warning", ""))
                 result["sailings"][0].append(s)
-        warning = _check_schedule_validity(schedule["dateRange"], target_date)
+        warning = _check_schedule_validity(result["dateRange"], target_date)
         if warning:
             result["scheduleWarning"] = warning
 
@@ -1302,6 +1705,7 @@ def get_schedule(route):
     weekly["dateRange"] = schedule.get("dateRange")
     weekly["sailings"] = copy.deepcopy(schedule.get("sailings") or weekly["sailings"])
     weekly["terminalCameras"] = schedule.get("terminalCameras")
+    weekly["notices"] = _notices_on(schedule, [datetime.now(PACIFIC).date()])
 
     if route in ROUTES:
         cc_data = get_current_conditions(route)
@@ -1336,6 +1740,11 @@ def empty_schedule():
 WARM_GAP_SEC = 5
 WARM_INTERVAL_SEC = 6 * 3600
 WARM_RETRY_INTERVAL_SEC = 20 * 60
+# While any route holds a period BC Ferries has posted no timetable for. Those
+# routes are covered (there is nothing more to fetch), but BC Ferries says the
+# timetable is coming, and without this nobody would look for it unless
+# someone happened to open the page.
+WARM_UNPOSTED_INTERVAL_SEC = 3600
 
 
 def warm_schedules():
@@ -1362,29 +1771,50 @@ def warm_schedules():
         stored += 1
         if not store.period_ended(entry[1]):
             current += 1
+    waiting = _routes_waiting_for_a_timetable(routes)
     print(
         f"[warm] {stored}/{len(routes)} directions have a stored schedule, "
-        f"{current} of them for a period that has not ended"
+        f"{current} of them for a period that has not ended, "
+        f"{len(waiting)} waiting on BC Ferries to post a timetable"
     )
     return current, len(routes)
 
 
-def _next_warm_delay(current, total):
+def _routes_waiting_for_a_timetable(routes):
+    """The routes whose stored period BC Ferries has posted no timetable for."""
+    waiting = []
+    for route in routes:
+        entry = store.load(route)
+        if entry and entry[1].get("notPosted"):
+            waiting.append(route)
+    return waiting
+
+
+def _next_warm_delay(current, total, waiting=0):
     """Seconds until the next warm pass.
 
     Retry sooner while coverage is incomplete — that means the source is
     walled or flaky, and we want the timetables the moment it recovers. A
     stored schedule whose period has ended counts as missing: it is the one
-    most likely to show a departure that no longer runs.
+    most likely to show a departure that no longer runs. A period with no
+    timetable posted counts as covered, but brings the next pass forward to
+    the hour, so the timetable is picked up soon after BC Ferries posts it.
     """
-    complete = current >= total
-    return WARM_INTERVAL_SEC if complete else WARM_RETRY_INTERVAL_SEC
+    if current < total:
+        return WARM_RETRY_INTERVAL_SEC
+    if waiting:
+        return WARM_UNPOSTED_INTERVAL_SEC
+    return WARM_INTERVAL_SEC
 
 
 def _warm_loop():
     while True:
         current, total = warm_schedules()
-        time.sleep(_next_warm_delay(current, total))
+        waiting = _routes_waiting_for_a_timetable(warmable_routes())
+        # Sleep until the next pass is due, or until a page request has stored
+        # a period with no timetable posted and wants the one after it fetched.
+        _warm_now.wait(timeout=_next_warm_delay(current, total, len(waiting)))
+        _warm_now.clear()
 
 
 def start_warmer():
